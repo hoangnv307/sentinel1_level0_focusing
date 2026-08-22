@@ -31,8 +31,7 @@ DAD / product-supported:
 
 [Inference] Reverse-engineered for the supplied S6 scene:
 - azimuth DCE block length = 6000 lines
-- DCE block starts approximately at:
-      0, floor(N_input/2), N_input - 6000
+- DCE block starts follow the global sliced-product timeline scheduler
 - nominal range block size = 1000 samples as a research starting point.
   The exact IPF internal range-block configuration is not public.
 
@@ -42,7 +41,7 @@ they can be changed without touching the estimator itself.
 
 from __future__ import annotations
 
-__version__ = "2.1.0-reference-grid"
+__version__ = "2.2.0-slice-timeline"
 # BUILD_MARKER: MULTISEGMENT_SWST_ALIGNMENT_2026_08_21
 
 from dataclasses import dataclass, field
@@ -84,9 +83,12 @@ class DCEConfig:
 
     # How DCE azimuth blocks are placed.
     # "spacing"  : regular configurable spacing, with tail coverage.
-    # "edge_mid_edge": [Inference] reverse-engineered S6 placement.
+    # "slice_timeline": [Inference] global Sentinel-1 sliced-product schedule.
+    # "edge_mid_edge": legacy single-product research placement.
     # "custom"   : use explicit starts passed to build_azimuth_blocks().
-    azimuth_placement: Literal["spacing", "edge_mid_edge", "custom"] = "spacing"
+    azimuth_placement: Literal[
+        "spacing", "slice_timeline", "edge_mid_edge", "custom"
+    ] = "spacing"
 
     # DAD §5.6: azimuth spacing between DC estimates is configurable.
     # Required for azimuth_placement="spacing".
@@ -119,7 +121,7 @@ class DCEConfig:
         [Inference]
         - 6000-line DCE azimuth blocks are directly recovered from the
           fineDceAzimuthStart/Stop duration and PRF.
-        - DCE block starts follow edge / middle / edge behavior for N=49890.
+        - DCE block starts follow the global sliced-product timeline rule.
         - 1000 range samples is a starting estimate suggested by the first
           fine-DCE center being ~500 samples from t0. It is NOT claimed as a
           published IPF parameter.
@@ -128,7 +130,7 @@ class DCEConfig:
             azimuth_block_size_lines=6000,
             num_range_blocks=20,
             range_block_size_samples=1000,
-            azimuth_placement="edge_mid_edge",
+            azimuth_placement="slice_timeline",
             azimuth_spacing_lines=None,
             unwrap_fft_length=4096,
             polynomial_degree=2,
@@ -332,6 +334,11 @@ def build_azimuth_blocks(
     *,
     azimuth_time_offset_s: float = 0.0,
     custom_starts: Optional[Sequence[int]] = None,
+    slice_start_times_s: Optional[Sequence[float]] = None,
+    last_slice_stop_time_s: Optional[float] = None,
+    product_start_time_s: Optional[float] = None,
+    product_stop_time_s: Optional[float] = None,
+    zero_dop_minus_acq_time_s: Optional[float] = None,
 ) -> list[AzimuthDCEBlock]:
     """Build DCE azimuth blocks.
 
@@ -341,10 +348,10 @@ def build_azimuth_blocks(
     to each input line. ``azimuth_time_offset_s`` can convert packet/acquisition
     time to the desired DCE time convention (e.g. zero-Doppler time).
 
-    For the supplied S6 scene, the observed product is reproduced at the level
-    of line placement by ``azimuth_placement="edge_mid_edge"``:
-        [0, floor(N/2), N-B]
-    where B is the DCE block length. This placement rule is [Inference].
+    ``azimuth_placement="slice_timeline"`` uses the global schedule inferred
+    from Sentinel-1 Stripmap sliced products: each slice start, each midpoint
+    between consecutive slice starts, and for the final slice its midpoint and
+    final complete DCE block. Records are retained by zero-Doppler product time.
     """
     if n_lines <= 0:
         raise ValueError("n_lines must be positive.")
@@ -357,10 +364,79 @@ def build_azimuth_blocks(
             f"azimuth_block_size_lines={B} must satisfy 1 < B <= n_lines={n_lines}."
         )
 
+    line_times = None
+    if azimuth_times_s is not None:
+        line_times = np.asarray(azimuth_times_s, dtype=np.float64)
+        if line_times.ndim != 1 or line_times.size != n_lines:
+            raise ValueError(
+                "azimuth_times_s must be a 1-D array with one value per input line."
+            )
+        if np.any(np.diff(line_times) <= 0):
+            raise ValueError("azimuth_times_s must be strictly increasing.")
+
     placement = config.azimuth_placement
 
-    if placement == "edge_mid_edge":
+    if placement == "slice_timeline":
+        if line_times is None:
+            raise ValueError(
+                "azimuth_times_s is required for placement='slice_timeline'."
+            )
+        if (
+            slice_start_times_s is None
+            or last_slice_stop_time_s is None
+            or product_start_time_s is None
+            or product_stop_time_s is None
+            or zero_dop_minus_acq_time_s is None
+        ):
+            raise ValueError(
+                "slice_timeline placement requires slice start/stop, product "
+                "start/stop, and zero-Doppler minus acquisition time."
+            )
+
+        slice_starts = np.asarray(slice_start_times_s, dtype=np.float64)
+        if slice_starts.ndim != 1 or slice_starts.size == 0:
+            raise ValueError("slice_start_times_s must not be empty.")
+        if np.any(np.diff(slice_starts) <= 0):
+            raise ValueError("slice_start_times_s must be strictly increasing.")
+
+        last_stop = float(last_slice_stop_time_s)
+        product_start = float(product_start_time_s)
+        product_stop = float(product_stop_time_s)
+        zd_offset = float(zero_dop_minus_acq_time_s)
+        block_duration = B / float(prf_hz)
+
+        if last_stop - float(slice_starts[-1]) < block_duration:
+            raise ValueError("The final slice is shorter than one DCE block.")
+        if product_stop < product_start:
+            raise ValueError("product_stop_time_s must not precede product_start_time_s.")
+
+        global_starts: list[float] = []
+        for t0, t1 in zip(slice_starts[:-1], slice_starts[1:]):
+            global_starts.extend((float(t0), 0.5 * float(t0 + t1)))
+        global_starts.extend((
+            float(slice_starts[-1]),
+            0.5 * float(slice_starts[-1] + last_stop),
+            last_stop - block_duration,
+        ))
+
+        unique_starts: list[float] = []
+        for value in sorted(global_starts):
+            if not unique_starts or abs(value - unique_starts[-1]) > 1e-9:
+                unique_starts.append(value)
+
+        starts = []
+        for start_time in unique_starts:
+            center_zd = start_time + 0.5 * block_duration + zd_offset
+            if product_start <= center_zd <= product_stop:
+                start = int(np.argmin(np.abs(line_times - start_time)))
+                if start + B <= n_lines:
+                    starts.append(start)
+        starts = sorted(set(starts))
+        output_time_offset = zd_offset
+
+    elif placement == "edge_mid_edge":
         starts = [0, n_lines // 2, n_lines - B]
+        output_time_offset = float(azimuth_time_offset_s)
 
     elif placement == "spacing":
         step = config.azimuth_spacing_lines
@@ -374,6 +450,7 @@ def build_azimuth_blocks(
             # Ensure the last DCE block covers the end of the supplied
             # internal signal-data extent.
             starts.append(last_start)
+        output_time_offset = float(azimuth_time_offset_s)
 
     elif placement == "custom":
         if not custom_starts:
@@ -381,25 +458,14 @@ def build_azimuth_blocks(
                 "custom_starts must be supplied for placement='custom'."
             )
         starts = [int(s) for s in custom_starts]
+        output_time_offset = float(azimuth_time_offset_s)
 
     else:
         raise ValueError(f"Unsupported azimuth placement: {placement}")
 
-    # Clip, sort and remove duplicates.
-    last_start = n_lines - B
-    starts = sorted({min(max(0, int(s)), last_start) for s in starts})
-
-    if azimuth_times_s is not None:
-        line_times = np.asarray(azimuth_times_s, dtype=np.float64)
-        if line_times.ndim != 1 or line_times.size != n_lines:
-            raise ValueError(
-                "azimuth_times_s must be a 1-D array with one value per input line."
-            )
-        if np.any(np.diff(line_times) <= 0):
-            raise ValueError("azimuth_times_s must be strictly increasing.")
-        line_times = line_times + float(azimuth_time_offset_s)
-    else:
-        line_times = None
+    if placement != "slice_timeline":
+        last_start = n_lines - B
+        starts = sorted({min(max(0, int(s)), last_start) for s in starts})
 
     blocks: list[AzimuthDCEBlock] = []
 
@@ -407,16 +473,18 @@ def build_azimuth_blocks(
         stop = start + B
 
         if line_times is None:
-            t_start = start / prf_hz + azimuth_time_offset_s
-            t_stop = stop / prf_hz + azimuth_time_offset_s
+            t_start = start / prf_hz + output_time_offset
+            t_stop = stop / prf_hz + output_time_offset
         else:
-            t_start = float(line_times[start])
+            t_start = float(line_times[start] + output_time_offset)
             if stop < n_lines:
                 # Right-hand boundary is exactly the next line time.
-                t_stop = float(line_times[stop])
+                t_stop = float(line_times[stop] + output_time_offset)
             else:
                 # Extrapolate one PRI after the final line.
-                t_stop = float(line_times[-1] + 1.0 / prf_hz)
+                t_stop = float(
+                    line_times[-1] + 1.0 / prf_hz + output_time_offset
+                )
 
         # Product observations are consistent with DCE azimuthTime being the
         # midpoint of fineDceAzimuthStartTime/fineDceAzimuthStopTime.
@@ -1219,6 +1287,11 @@ class Sentinel1DCE:
         azimuth_times_s: Optional[ArrayLike] = None,
         azimuth_time_offset_s: float = 0.0,
         custom_azimuth_starts: Optional[Sequence[int]] = None,
+        slice_start_times_s: Optional[Sequence[float]] = None,
+        last_slice_stop_time_s: Optional[float] = None,
+        product_start_time_s: Optional[float] = None,
+        product_stop_time_s: Optional[float] = None,
+        zero_dop_minus_acq_time_s: Optional[float] = None,
     ) -> tuple[list[AzimuthDCEBlock], list[RangeDCEBlock]]:
         """Build and inspect DCE block layout without estimating DC."""
         az_blocks = build_azimuth_blocks(
@@ -1228,6 +1301,11 @@ class Sentinel1DCE:
             azimuth_times_s=azimuth_times_s,
             azimuth_time_offset_s=azimuth_time_offset_s,
             custom_starts=custom_azimuth_starts,
+            slice_start_times_s=slice_start_times_s,
+            last_slice_stop_time_s=last_slice_stop_time_s,
+            product_start_time_s=product_start_time_s,
+            product_stop_time_s=product_stop_time_s,
+            zero_dop_minus_acq_time_s=zero_dop_minus_acq_time_s,
         )
 
         rg_blocks = build_range_blocks(
@@ -1372,6 +1450,11 @@ class Sentinel1DCE:
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
         custom_azimuth_starts: Optional[Sequence[int]] = None,
+        slice_start_times_s: Optional[Sequence[float]] = None,
+        last_slice_stop_time_s: Optional[float] = None,
+        product_start_time_s: Optional[float] = None,
+        product_stop_time_s: Optional[float] = None,
+        zero_dop_minus_acq_time_s: Optional[float] = None,
     ) -> list[DCERecord]:
         """Estimate DCE records for a complete internal signal-data extent.
 
@@ -1421,6 +1504,11 @@ class Sentinel1DCE:
             azimuth_times_s=azimuth_times_s,
             azimuth_time_offset_s=azimuth_time_offset_s,
             custom_azimuth_starts=custom_azimuth_starts,
+            slice_start_times_s=slice_start_times_s,
+            last_slice_stop_time_s=last_slice_stop_time_s,
+            product_start_time_s=product_start_time_s,
+            product_stop_time_s=product_stop_time_s,
+            zero_dop_minus_acq_time_s=zero_dop_minus_acq_time_s,
         )
 
         records: list[DCERecord] = []
@@ -1463,6 +1551,11 @@ class Sentinel1DCE:
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
         custom_azimuth_starts: Optional[Sequence[int]] = None,
+        slice_start_times_s: Optional[Sequence[float]] = None,
+        last_slice_stop_time_s: Optional[float] = None,
+        product_start_time_s: Optional[float] = None,
+        product_stop_time_s: Optional[float] = None,
+        zero_dop_minus_acq_time_s: Optional[float] = None,
         lanczos_radius: int = 8,
         azimuth_gap_tolerance_s: Optional[float] = None,
         batch_lines: int = 256,
@@ -1491,6 +1584,11 @@ class Sentinel1DCE:
             azimuth_times_s=prepared.azimuth_times_s,
             azimuth_time_offset_s=azimuth_time_offset_s,
             custom_starts=custom_azimuth_starts,
+            slice_start_times_s=slice_start_times_s,
+            last_slice_stop_time_s=last_slice_stop_time_s,
+            product_start_time_s=product_start_time_s,
+            product_stop_time_s=product_stop_time_s,
+            zero_dop_minus_acq_time_s=zero_dop_minus_acq_time_s,
         )
         rg_blocks = build_range_blocks(
             n_range_samples=prepared.num_range_samples,
@@ -1710,6 +1808,36 @@ def records_summary(records: Sequence[DCERecord]) -> list[dict]:
 
 def _self_test() -> None:
     """Synthetic tests for CDCE and multi-segment fractional alignment."""
+    # --- Global sliced-product scheduler: 3/2/2 records over three slices ---
+    schedule_prf = 1000.0
+    schedule_lines = np.arange(3000, dtype=np.float64) / schedule_prf
+    schedule_config = DCEConfig(
+        azimuth_block_size_lines=100,
+        num_range_blocks=1,
+        azimuth_placement="slice_timeline",
+    )
+    schedule_kwargs = {
+        "slice_start_times_s": [0.0, 1.0, 2.0],
+        "last_slice_stop_time_s": 3.0,
+        "zero_dop_minus_acq_time_s": 0.0,
+    }
+    for product_times, expected_starts in (
+        ((0.0, 1.1), [0, 500, 1000]),
+        ((1.1, 2.1), [1500, 2000]),
+        ((2.1, 3.0), [2500, 2900]),
+    ):
+        blocks = build_azimuth_blocks(
+            n_lines=schedule_lines.size,
+            prf_hz=schedule_prf,
+            config=schedule_config,
+            azimuth_times_s=schedule_lines,
+            product_start_time_s=product_times[0],
+            product_stop_time_s=product_times[1],
+            **schedule_kwargs,
+        )
+        if [block.start_line for block in blocks] != expected_starts:
+            raise RuntimeError("Slice-timeline scheduler self-test failed.")
+
     # --- Original single-array CDCE test ---
     prf = 1000.0
     n_az = 256
