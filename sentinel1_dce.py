@@ -42,6 +42,9 @@ they can be changed without touching the estimator itself.
 
 from __future__ import annotations
 
+__version__ = "2.1.0-reference-grid"
+# BUILD_MARKER: MULTISEGMENT_SWST_ALIGNMENT_2026_08_21
+
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Literal, Optional, Sequence
 
@@ -131,6 +134,110 @@ class DCEConfig:
             polynomial_degree=2,
             rms_threshold_hz=20.0,
         )
+
+
+@dataclass(frozen=True)
+class DCESegment:
+    """One contiguous range-compressed acquisition segment/chunk.
+
+    A segment may have its own SWST and therefore its own fast-time/range grid.
+    ``range_compressed`` must have shape ``(azimuth_lines, range_samples)``.
+    """
+
+    range_compressed: np.ndarray
+    slant_range_times_s: ArrayLike
+    azimuth_times_s: ArrayLike
+    name: str = "segment"
+
+    def __post_init__(self) -> None:
+        data = np.asarray(self.range_compressed)
+        tau = np.asarray(self.slant_range_times_s, dtype=np.float64)
+        eta = np.asarray(self.azimuth_times_s, dtype=np.float64)
+
+        if data.ndim != 2:
+            raise ValueError(
+                f"{self.name}: range_compressed must have shape (azimuth, range)."
+            )
+        if tau.ndim != 1 or tau.size != data.shape[1]:
+            raise ValueError(
+                f"{self.name}: slant_range_times_s must have one value per range sample."
+            )
+        if eta.ndim != 1 or eta.size != data.shape[0]:
+            raise ValueError(
+                f"{self.name}: azimuth_times_s must have one value per azimuth line."
+            )
+        if tau.size < 2 or np.any(np.diff(tau) <= 0):
+            raise ValueError(f"{self.name}: slant_range_times_s must be increasing.")
+        if eta.size < 1 or (eta.size > 1 and np.any(np.diff(eta) <= 0)):
+            raise ValueError(f"{self.name}: azimuth_times_s must be increasing.")
+
+    @property
+    def num_azimuth_lines(self) -> int:
+        return int(np.asarray(self.range_compressed).shape[0])
+
+    @property
+    def num_range_samples(self) -> int:
+        return int(np.asarray(self.range_compressed).shape[1])
+
+
+@dataclass(frozen=True)
+class SegmentAlignment:
+    """Prepared mapping from one segment range grid to the common DCE grid."""
+
+    segment: DCESegment
+    global_start_line: int
+    global_stop_line: int
+    source_start_index: float
+    integer_shift_samples: int
+    fractional_shift_samples: float
+    source_range_spacing_s: float
+
+
+@dataclass
+class PreparedSegmentScene:
+    """Prepared multi-segment scene used by :meth:`estimate_segments`.
+
+    The object stores only alignment metadata and the common range grid.  It
+    does *not* materialize a huge fully aligned 2-D scene in memory.
+    """
+
+    alignments: list[SegmentAlignment]
+    common_slant_range_times_s: np.ndarray
+    azimuth_times_s: np.ndarray
+    range_spacing_s: float
+    nominal_azimuth_spacing_s: float
+    azimuth_gap_tolerance_s: float
+    lanczos_radius: int = 8
+
+    @property
+    def num_azimuth_lines(self) -> int:
+        return int(self.azimuth_times_s.size)
+
+    @property
+    def num_range_samples(self) -> int:
+        return int(self.common_slant_range_times_s.size)
+
+    def alignment_summary(self) -> list[dict]:
+        """Return notebook-friendly range-alignment diagnostics."""
+        out: list[dict] = []
+        for a in self.alignments:
+            out.append(
+                {
+                    "name": a.segment.name,
+                    "global_start_line": a.global_start_line,
+                    "global_stop_line": a.global_stop_line,
+                    "azimuth_lines": a.segment.num_azimuth_lines,
+                    "native_range_samples": a.segment.num_range_samples,
+                    "common_range_samples": self.num_range_samples,
+                    "native_range_start_s": float(np.asarray(a.segment.slant_range_times_s)[0]),
+                    "common_range_start_s": float(self.common_slant_range_times_s[0]),
+                    "source_start_index": a.source_start_index,
+                    "integer_shift_samples": a.integer_shift_samples,
+                    "fractional_part_samples": a.fractional_shift_samples,
+                    "range_spacing_s": a.source_range_spacing_s,
+                }
+            )
+        return out
 
 
 @dataclass(frozen=True)
@@ -526,6 +633,305 @@ def fine_dce_cdce(
     # DAD Eq. (5-19)
     fine_hz = -(float(prf_hz) / (2.0 * np.pi)) * phase
 
+    return fine_hz, c_blocks, coherence
+
+
+# ---------------------------------------------------------------------------
+# Multi-segment range-grid alignment
+# ---------------------------------------------------------------------------
+
+def prepare_dce_segments(
+    segments: Sequence[DCESegment],
+    prf_hz: float,
+    *,
+    lanczos_radius: int = 8,
+    range_spacing_rtol: float = 1e-6,
+    azimuth_gap_tolerance_s: Optional[float] = None,
+) -> PreparedSegmentScene:
+    """Prepare acquisition segments having different SWST/range lengths.
+
+    The first chronological segment supplies the fixed reference fast-time
+    grid. Each segment is mapped to this grid by a constant fractional sample
+    shift. Sentinel-1 chunks of the same acquisition are expected to use the
+    same range sampling frequency; if not, this routine raises rather than
+    silently resampling a sample-rate change.
+
+    For the S6 case discussed in the notebook, this exposes the ~81.25-sample
+    chunk-14 offset directly through ``alignment_summary()``.
+    """
+    if not segments:
+        raise ValueError("segments must not be empty.")
+    if prf_hz <= 0:
+        raise ValueError("prf_hz must be positive.")
+    if lanczos_radius < 2:
+        raise ValueError("lanczos_radius must be >= 2.")
+
+    segs = sorted(segments, key=lambda x: float(np.asarray(x.azimuth_times_s)[0]))
+
+    dts = []
+    for seg in segs:
+        tau = np.asarray(seg.slant_range_times_s, dtype=np.float64)
+        dts.append(float(np.median(np.diff(tau))))
+
+    dt = float(np.median(dts))
+    if dt <= 0:
+        raise ValueError("Invalid range sample spacing.")
+
+    for seg, dt_i in zip(segs, dts):
+        if not np.isclose(dt_i, dt, rtol=range_spacing_rtol, atol=0.0):
+            raise ValueError(
+                f"{seg.name}: range sample spacing differs from the common spacing "
+                f"({dt_i:.12e} s vs {dt:.12e} s). Sample-rate resampling is not "
+                "implemented; this API currently handles SWST/grid-offset changes."
+            )
+
+    common_tau = np.asarray(segs[0].slant_range_times_s, dtype=np.float64).copy()
+    common_start = float(common_tau[0])
+
+    alignments: list[SegmentAlignment] = []
+    az_times: list[np.ndarray] = []
+    global_line = 0
+
+    previous_last_time: Optional[float] = None
+    nominal_pri = 1.0 / float(prf_hz)
+    gap_tolerance = (
+        0.05 * nominal_pri
+        if azimuth_gap_tolerance_s is None
+        else float(azimuth_gap_tolerance_s)
+    )
+    if gap_tolerance < 0:
+        raise ValueError("azimuth_gap_tolerance_s must be non-negative.")
+
+    for seg, dt_i in zip(segs, dts):
+        eta = np.asarray(seg.azimuth_times_s, dtype=np.float64)
+        tau = np.asarray(seg.slant_range_times_s, dtype=np.float64)
+
+        if previous_last_time is not None:
+            gap = float(eta[0] - previous_last_time)
+            # Permit small packet-time quantization differences, but reject
+            # reordered/overlapping segment time axes.
+            if gap <= 0:
+                raise ValueError(
+                    f"{seg.name}: azimuth times overlap or are not ordered."
+                )
+        previous_last_time = float(eta[-1])
+
+        x0 = (common_start - float(tau[0])) / dt_i
+        base = int(np.floor(x0 + 1e-12))
+        frac = float(x0 - base)
+        if frac < 0 and abs(frac) < 1e-10:
+            frac = 0.0
+        if frac >= 1.0 - 1e-10:
+            base += 1
+            frac = 0.0
+
+        start_line = global_line
+        stop_line = start_line + seg.num_azimuth_lines
+
+        alignments.append(
+            SegmentAlignment(
+                segment=seg,
+                global_start_line=start_line,
+                global_stop_line=stop_line,
+                source_start_index=float(x0),
+                integer_shift_samples=base,
+                fractional_shift_samples=frac,
+                source_range_spacing_s=dt_i,
+            )
+        )
+        az_times.append(eta)
+        global_line = stop_line
+
+    all_eta = np.concatenate(az_times)
+    if all_eta.size > 1 and np.any(np.diff(all_eta) <= 0):
+        raise ValueError("Concatenated segment azimuth times are not strictly increasing.")
+
+    return PreparedSegmentScene(
+        alignments=alignments,
+        common_slant_range_times_s=common_tau,
+        azimuth_times_s=all_eta,
+        range_spacing_s=dt,
+        nominal_azimuth_spacing_s=nominal_pri,
+        azimuth_gap_tolerance_s=gap_tolerance,
+        lanczos_radius=int(lanczos_radius),
+    )
+
+
+def _lanczos_fractional_weights(frac: float, radius: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return integer tap offsets and normalized Lanczos-sinc weights."""
+    offsets = np.arange(-radius, radius + 1, dtype=int)
+    d = frac - offsets.astype(np.float64)
+    weights = np.sinc(d) * np.sinc(d / (radius + 1.0))
+    weights[np.abs(d) >= radius + 1.0] = 0.0
+    sw = float(np.sum(weights))
+    if abs(sw) < 1e-15:
+        raise RuntimeError("Degenerate fractional-delay kernel.")
+    weights /= sw
+    return offsets, weights
+
+
+def _align_segment_rows(
+    alignment: SegmentAlignment,
+    local_start: int,
+    local_stop: int,
+    n_common: int,
+    *,
+    lanczos_radius: int,
+) -> np.ndarray:
+    """Align a small row batch to the common range grid.
+
+    The implementation is optimized for the Sentinel-1 case where chunks have
+    the same range sampling frequency and differ by a constant SWST offset.
+    Only the requested azimuth rows are materialized.
+    """
+    src = np.asarray(alignment.segment.range_compressed[local_start:local_stop, :])
+    if src.ndim != 2:
+        raise ValueError("Segment data slice must remain 2-D.")
+
+    base = alignment.integer_shift_samples
+    frac = alignment.fractional_shift_samples
+
+    out = np.zeros(
+        (src.shape[0], n_common),
+        dtype=np.result_type(src.dtype, np.complex128),
+    )
+
+    # Integer alignment needs no interpolation and is exact. Samples outside
+    # the native support remain zero and therefore do not contribute to ACCC.
+    if abs(frac) < 1e-12:
+        n0 = max(0, -base)
+        n1 = min(n_common, src.shape[1] - base)
+        if n1 > n0:
+            out[:, n0:n1] = src[:, base + n0:base + n1]
+        return out
+
+    offsets, weights = _lanczos_fractional_weights(frac, lanczos_radius)
+    n0 = max(0, -base - int(offsets[0]))
+    n1 = min(n_common, src.shape[1] - base - int(offsets[-1]))
+    if n1 <= n0:
+        return out
+
+    for m, w in zip(offsets, weights):
+        i0 = base + int(m) + n0
+        i1 = i0 + (n1 - n0)
+        out[:, n0:n1] += w * src[:, i0:i1]
+
+    return out
+
+
+def _stream_accc_from_segments(
+    prepared: PreparedSegmentScene,
+    block: AzimuthDCEBlock,
+    *,
+    batch_lines: int = 256,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Accumulate lag-one ACCC over a DCE block without building a huge scene.
+
+    Crucially, the last aligned line of one segment is correlated with the first
+    aligned line of the next segment, so a DCE block can cross a chunk boundary.
+    """
+    if batch_lines < 2:
+        raise ValueError("batch_lines must be >= 2.")
+
+    nr = prepared.num_range_samples
+    c_range = np.zeros(nr, dtype=np.complex128)
+    p0_range = np.zeros(nr, dtype=np.float64)
+    p1_range = np.zeros(nr, dtype=np.float64)
+
+    previous_line: Optional[np.ndarray] = None
+    previous_time: Optional[float] = None
+    pair_count = 0
+    nominal_dt = prepared.nominal_azimuth_spacing_s
+    tolerance = prepared.azimuth_gap_tolerance_s
+
+    for a in prepared.alignments:
+        g0 = max(block.start_line, a.global_start_line)
+        g1 = min(block.stop_line, a.global_stop_line)
+        if g1 <= g0:
+            continue
+
+        local0 = g0 - a.global_start_line
+        local1 = g1 - a.global_start_line
+
+        for b0 in range(local0, local1, batch_lines):
+            b1 = min(local1, b0 + batch_lines)
+            y = _align_segment_rows(
+                a,
+                b0,
+                b1,
+                nr,
+                lanczos_radius=prepared.lanczos_radius,
+            )
+
+            if y.shape[0] == 0:
+                continue
+
+            eta = np.asarray(a.segment.azimuth_times_s, dtype=np.float64)[b0:b1]
+
+            if (
+                previous_line is not None
+                and previous_time is not None
+                and abs(float(eta[0] - previous_time) - nominal_dt) <= tolerance
+            ):
+                first = y[0]
+                c_range += previous_line * np.conj(first)
+                p0_range += np.abs(previous_line) ** 2
+                p1_range += np.abs(first) ** 2
+                pair_count += 1
+
+            if y.shape[0] > 1:
+                valid_pairs = np.abs(np.diff(eta) - nominal_dt) <= tolerance
+                x0 = y[:-1][valid_pairs]
+                x1 = y[1:][valid_pairs]
+                c_range += np.sum(x0 * np.conj(x1), axis=0, dtype=np.complex128)
+                p0_range += np.sum(np.abs(x0) ** 2, axis=0, dtype=np.float64)
+                p1_range += np.sum(np.abs(x1) ** 2, axis=0, dtype=np.float64)
+                pair_count += int(np.count_nonzero(valid_pairs))
+
+            previous_line = np.asarray(y[-1]).copy()
+            previous_time = float(eta[-1])
+
+    block_times = prepared.azimuth_times_s[block.start_line:block.stop_line]
+    expected_pairs = int(np.count_nonzero(
+        np.abs(np.diff(block_times) - nominal_dt) <= tolerance
+    ))
+    if expected_pairs == 0:
+        raise RuntimeError("DCE block contains no valid lag-one azimuth pairs.")
+    if pair_count != expected_pairs:
+        raise RuntimeError(
+            f"DCE block [{block.start_line}, {block.stop_line}) expected "
+            f"{expected_pairs} adjacent azimuth pairs, accumulated {pair_count}."
+        )
+
+    return c_range, p0_range, p1_range, pair_count
+
+
+def _fine_dce_from_accumulators(
+    c_range: np.ndarray,
+    p0_range: np.ndarray,
+    p1_range: np.ndarray,
+    range_blocks: Sequence[RangeDCEBlock],
+    prf_hz: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert streaming ACCC accumulators to range-block fine DCE estimates."""
+    c_blocks = np.empty(len(range_blocks), dtype=np.complex128)
+    coherence = np.empty(len(range_blocks), dtype=np.float64)
+
+    for i, rb in enumerate(range_blocks):
+        r0, r1 = rb.start_sample, rb.stop_sample
+        if r0 < 0 or r1 > c_range.size or r1 <= r0:
+            raise ValueError(f"Invalid range block {i}: [{r0}, {r1}).")
+
+        c = c_range[r0:r1]
+        c_blocks[i] = np.mean(c)
+
+        num = float(np.abs(np.sum(c, dtype=np.complex128)))
+        e0 = float(np.sum(p0_range[r0:r1], dtype=np.float64))
+        e1 = float(np.sum(p1_range[r0:r1], dtype=np.float64))
+        den = np.sqrt(max(e0 * e1, 0.0))
+        coherence[i] = 0.0 if den == 0.0 else float(np.clip(num / den, 0.0, 1.0))
+
+    fine_hz = -(float(prf_hz) / (2.0 * np.pi)) * np.angle(c_blocks)
     return fine_hz, c_blocks, coherence
 
 
@@ -1033,6 +1439,167 @@ class Sentinel1DCE:
 
         return records
 
+
+    def prepare_segments(
+        self,
+        segments: Sequence[DCESegment],
+        *,
+        lanczos_radius: int = 8,
+        azimuth_gap_tolerance_s: Optional[float] = None,
+    ) -> PreparedSegmentScene:
+        """Prepare multiple acquisition chunks with different SWST/range grids."""
+        return prepare_dce_segments(
+            segments,
+            self.prf_hz,
+            lanczos_radius=lanczos_radius,
+            azimuth_gap_tolerance_s=azimuth_gap_tolerance_s,
+        )
+
+    def estimate_segments(
+        self,
+        segments: Sequence[DCESegment],
+        *,
+        azimuth_time_offset_s: float = 0.0,
+        t0_s: Optional[float] = None,
+        geometry_dc_provider: Optional[GeometryDcProvider] = None,
+        custom_azimuth_starts: Optional[Sequence[int]] = None,
+        lanczos_radius: int = 8,
+        azimuth_gap_tolerance_s: Optional[float] = None,
+        batch_lines: int = 256,
+        return_prepared_scene: bool = False,
+    ) -> list[DCERecord] | tuple[list[DCERecord], PreparedSegmentScene]:
+        """Estimate DCE over multiple acquisition segments/chunks.
+
+        Unlike :meth:`estimate_scene`, the input chunks do not need the same
+        SWST or range-vector length.  They are aligned lazily to a common
+        slant-range grid using a Lanczos-windowed sinc fractional delay.
+
+        This is intended for cases such as the supplied S6 acquisition where
+        DCE2 crosses the chunk-13/chunk-14 boundary and chunk 14 is displaced
+        by about 81.25 range samples relative to chunk 13.
+        """
+        prepared = self.prepare_segments(
+            segments,
+            lanczos_radius=lanczos_radius,
+            azimuth_gap_tolerance_s=azimuth_gap_tolerance_s,
+        )
+
+        az_blocks = build_azimuth_blocks(
+            n_lines=prepared.num_azimuth_lines,
+            prf_hz=self.prf_hz,
+            config=self.config,
+            azimuth_times_s=prepared.azimuth_times_s,
+            azimuth_time_offset_s=azimuth_time_offset_s,
+            custom_starts=custom_azimuth_starts,
+        )
+        rg_blocks = build_range_blocks(
+            n_range_samples=prepared.num_range_samples,
+            slant_range_times_s=prepared.common_slant_range_times_s,
+            config=self.config,
+        )
+
+        range_times = np.asarray(
+            [rb.center_slant_range_time_s for rb in rg_blocks],
+            dtype=np.float64,
+        )
+
+        records: list[DCERecord] = []
+
+        for block in az_blocks:
+            c_range, p0_range, p1_range, _ = _stream_accc_from_segments(
+                prepared,
+                block,
+                batch_lines=batch_lines,
+            )
+            fine, accc, coherence = _fine_dce_from_accumulators(
+                c_range,
+                p0_range,
+                p1_range,
+                rg_blocks,
+                self.prf_hz,
+            )
+
+            unwrap_weights = (
+                coherence
+                if self.config.unwrap_weighting == "coherence"
+                else None
+            )
+            fine_unwrapped = unwrap_fine_dce_dad(
+                range_times,
+                fine,
+                self.prf_hz,
+                fft_length=self.config.unwrap_fft_length,
+                weights=unwrap_weights,
+            )
+
+            t0 = float(range_times[0]) if t0_s is None else float(t0_s)
+            geometry_poly: Optional[np.ndarray] = None
+            ambiguity_number: Optional[int] = None
+            ambiguity_resolved = False
+
+            if geometry_dc_provider is not None:
+                geometry = np.asarray(
+                    geometry_dc_provider(block.azimuth_time_s, range_times),
+                    dtype=np.float64,
+                )
+                if geometry.shape != range_times.shape:
+                    raise ValueError(
+                        "geometry_dc_provider must return one DC value per range block."
+                    )
+
+                (
+                    absolute,
+                    data_poly,
+                    geometry_poly,
+                    ambiguity_number,
+                    valid_mask,
+                    rms,
+                ) = resolve_absolute_dce_with_geometry(
+                    range_times,
+                    fine_unwrapped,
+                    geometry,
+                    self.prf_hz,
+                    t0_s=t0,
+                    degree=self.config.polynomial_degree,
+                    outlier_sigma=self.config.outlier_sigma,
+                    max_fit_iterations=self.config.max_fit_iterations,
+                )
+                ambiguity_resolved = True
+            else:
+                absolute = fine_unwrapped.copy()
+                data_poly, valid_mask, rms = robust_polynomial_fit(
+                    range_times,
+                    absolute,
+                    t0_s=t0,
+                    degree=self.config.polynomial_degree,
+                    outlier_sigma=self.config.outlier_sigma,
+                    max_iterations=self.config.max_fit_iterations,
+                )
+
+            records.append(
+                DCERecord(
+                    block=block,
+                    t0_s=t0,
+                    range_blocks=list(rg_blocks),
+                    fine_baseband_hz=fine,
+                    fine_unwrapped_hz=fine_unwrapped,
+                    fine_absolute_hz=absolute,
+                    data_dc_polynomial=data_poly,
+                    geometry_dc_polynomial=geometry_poly,
+                    accc=accc,
+                    coherence=coherence,
+                    valid_mask=valid_mask,
+                    rms_error_hz=rms,
+                    rms_above_threshold=bool(rms > self.config.rms_threshold_hz),
+                    ambiguity_number=ambiguity_number,
+                    absolute_ambiguity_resolved=ambiguity_resolved,
+                )
+            )
+
+        if return_prepared_scene:
+            return records, prepared
+        return records
+
     @staticmethod
     def evaluate_records(
         records: Sequence[DCERecord],
@@ -1142,7 +1709,8 @@ def records_summary(records: Sequence[DCERecord]) -> list[dict]:
 
 
 def _self_test() -> None:
-    """Minimal synthetic CDCE test; no external Sentinel-1 data required."""
+    """Synthetic tests for CDCE and multi-segment fractional alignment."""
+    # --- Original single-array CDCE test ---
     prf = 1000.0
     n_az = 256
     n_rg = 120
@@ -1169,13 +1737,92 @@ def _self_test() -> None:
     expected = np.array(
         [np.mean(true_f[b.start_sample:b.stop_sample]) for b in rg_blocks]
     )
-
     if np.max(np.abs(fine - expected)) > 0.2:
         raise RuntimeError("Synthetic CDCE self-test failed.")
+
+    # --- Multi-segment test: segment #2 starts 0.25 range sample earlier ---
+    fs = 20e6
+    dt = 1.0 / fs
+    n1 = 160
+    n2 = 160
+    nr1 = 140
+    nr2 = 150
+    fdc = 82.0
+
+    tau1 = 0.006 + np.arange(nr1) * dt
+    tau2 = (0.006 - 0.25 * dt) + np.arange(nr2) * dt
+
+    eta1 = np.arange(n1) / prf
+    eta2 = np.arange(n1, n1 + n2) / prf
+
+    # A continuous range phase makes fractional-grid alignment testable.
+    fr = 1.7e6
+    data1 = np.exp(
+        1j * (
+            2.0 * np.pi * fdc * eta1[:, None]
+            + 2.0 * np.pi * fr * tau1[None, :]
+        )
+    )
+    data2 = np.exp(
+        1j * (
+            2.0 * np.pi * fdc * eta2[:, None]
+            + 2.0 * np.pi * fr * tau2[None, :]
+        )
+    )
+
+    seg1 = DCESegment(data1, tau1, eta1, name="seg1")
+    seg2 = DCESegment(data2, tau2, eta2, name="seg2")
+
+    cfg2 = DCEConfig(
+        azimuth_block_size_lines=n1 + n2,
+        num_range_blocks=5,
+        range_block_size_samples=20,
+        azimuth_placement="custom",
+        unwrap_fft_length=1024,
+    )
+    est = Sentinel1DCE(prf, cfg2)
+    recs, prepared = est.estimate_segments(
+        [seg1, seg2],
+        custom_azimuth_starts=[0],
+        return_prepared_scene=True,
+        batch_lines=64,
+    )
+
+    shift = prepared.alignment_summary()[1]["source_start_index"]
+    if abs(shift - 0.25) > 1e-8:
+        raise RuntimeError(
+            f"Fractional alignment self-test failed: expected 0.25, got {shift}."
+        )
+    if prepared.num_range_samples != nr1:
+        raise RuntimeError("Reference range-grid self-test failed.")
+
+    if np.max(np.abs(recs[0].fine_baseband_hz - fdc)) > 0.25:
+        raise RuntimeError("Multi-segment DCE self-test failed.")
+
+    # A missing azimuth line between segments must not become a lag-one pair.
+    seg2_gap = DCESegment(data2, tau2, eta2 + 1.0 / prf, name="seg2_gap")
+    prepared_gap = est.prepare_segments([seg1, seg2_gap])
+    az_blocks, _ = est.build_layout(
+        n_azimuth_lines=n1 + n2,
+        n_range_samples=prepared_gap.num_range_samples,
+        slant_range_times_s=prepared_gap.common_slant_range_times_s,
+        azimuth_times_s=prepared_gap.azimuth_times_s,
+        custom_azimuth_starts=[0],
+    )
+    *_, pair_count = _stream_accc_from_segments(
+        prepared_gap,
+        az_blocks[0],
+        batch_lines=64,
+    )
+    if pair_count != n1 + n2 - 2:
+        raise RuntimeError("Azimuth-gap self-test failed.")
 
 
 __all__ = [
     "DCEConfig",
+    "DCESegment",
+    "SegmentAlignment",
+    "PreparedSegmentScene",
     "AzimuthDCEBlock",
     "RangeDCEBlock",
     "DCERecord",
@@ -1184,6 +1831,7 @@ __all__ = [
     "build_range_blocks",
     "lag1_accc",
     "fine_dce_cdce",
+    "prepare_dce_segments",
     "unwrap_fine_dce_dad",
     "robust_polynomial_fit",
     "resolve_absolute_dce_with_geometry",
