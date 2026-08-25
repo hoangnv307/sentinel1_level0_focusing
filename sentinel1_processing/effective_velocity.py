@@ -1,5 +1,5 @@
 """
-precise_effective_velocity.py
+sentinel1_processing.effective_velocity
 
 Numerical effective-radar-velocity estimator for space-borne SAR.
 
@@ -546,7 +546,7 @@ def make_estimator_from_notebook(l0file, wavelength_m):
 
     Example
     -------
-    from precise_effective_velocity import make_estimator_from_notebook
+    from sentinel1_processing.effective_velocity import make_estimator_from_notebook
 
     vr_estimator = make_estimator_from_notebook(
         l0file,

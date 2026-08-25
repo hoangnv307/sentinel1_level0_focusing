@@ -1,5 +1,5 @@
 """
-sentinel1_dce.py
+sentinel1_processing.dce
 ================
 
 Research-oriented Sentinel-1 Doppler Centroid Estimation (DCE) utilities.
@@ -1780,6 +1780,67 @@ class Sentinel1DCE:
 # Small diagnostic helpers
 # ---------------------------------------------------------------------------
 
+GPS_EPOCH_UTC = np.datetime64("1980-01-06T00:00:00", "us")
+
+
+def utc_iso_to_gps_seconds(text: str, gps_utc_offset_s: float = 18.0) -> float:
+    """Convert a UTC ISO timestamp to GPS seconds since 1980-01-06."""
+    utc_s = (
+        np.datetime64(text, "us") - GPS_EPOCH_UTC
+    ) / np.timedelta64(1, "s")
+    return float(utc_s + gps_utc_offset_s)
+
+
+def prepare_annotation_records(
+    records: Sequence[dict], gps_utc_offset_s: float = 18.0
+) -> list[dict]:
+    """Normalize L1 annotation DCE dictionaries for numerical evaluation."""
+    prepared = []
+    for record in records:
+        item = dict(record)
+        item["dataDcPolynomial"] = np.asarray(
+            item["dataDcPolynomial"], dtype=np.float64
+        )
+        item["azimuth_s"] = utc_iso_to_gps_seconds(
+            item["azimuthTime"], gps_utc_offset_s
+        )
+        for source, target in (("fineStart", "fine_start_s"),
+                               ("fineStop", "fine_stop_s")):
+            if source in item:
+                item[target] = utc_iso_to_gps_seconds(
+                    item[source], gps_utc_offset_s
+                )
+        prepared.append(item)
+    return sorted(prepared, key=lambda item: item["azimuth_s"])
+
+
+def evaluate_annotation_dce(
+    records: Sequence[dict],
+    azimuth_time_s: float,
+    slant_range_times_s: ArrayLike,
+) -> np.ndarray:
+    """Evaluate and linearly interpolate annotation DCE polynomials."""
+    if not records:
+        raise ValueError("records must not be empty.")
+
+    def evaluate(record):
+        dt = np.asarray(slant_range_times_s) - record["t0"]
+        return np.polynomial.polynomial.polyval(
+            dt, record["dataDcPolynomial"]
+        )
+
+    times = np.asarray([record["azimuth_s"] for record in records])
+    time_s = float(azimuth_time_s)
+    if time_s <= times[0]:
+        return evaluate(records[0])
+    if time_s >= times[-1]:
+        return evaluate(records[-1])
+
+    hi = int(np.searchsorted(times, time_s, side="right"))
+    lo = hi - 1
+    alpha = (time_s - times[lo]) / (times[hi] - times[lo])
+    return (1.0 - alpha) * evaluate(records[lo]) + alpha * evaluate(records[hi])
+
 def records_summary(records: Sequence[DCERecord]) -> list[dict]:
     """Return a notebook-friendly list of dictionaries."""
     out: list[dict] = []
@@ -1963,10 +2024,13 @@ __all__ = [
     "unwrap_fine_dce_dad",
     "robust_polynomial_fit",
     "resolve_absolute_dce_with_geometry",
+    "utc_iso_to_gps_seconds",
+    "prepare_annotation_records",
+    "evaluate_annotation_dce",
     "records_summary",
 ]
 
 
 if __name__ == "__main__":
     _self_test()
-    print("sentinel1_dce.py self-test: PASS")
+    print("sentinel1_processing.dce self-test: PASS")
