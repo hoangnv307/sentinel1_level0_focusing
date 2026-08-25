@@ -9,7 +9,7 @@ from sentinel1_processing.dce import (
     evaluate_annotation_dce,
     prepare_annotation_records,
 )
-from sentinel1_processing.range_compression import compress_range
+from sentinel1_processing.range_compression import compress_range, estimate_iq_bias
 from sentinel1_processing.rcmc import build_sinc_table
 
 
@@ -47,6 +47,23 @@ class ProcessingTest(unittest.TestCase):
         )
         np.testing.assert_allclose(same_result[0], same, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(same_times, times)
+
+        biased = data + (2.0 - 3.0j)
+        self.assertAlmostEqual(
+            estimate_iq_bias(np.full((2, 3), 2.0 - 3.0j)),
+            2.0 - 3.0j,
+        )
+        corrected, _ = compress_range(
+            biased,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            batch_lines=1,
+            iq_bias=2.0 - 3.0j,
+        )
+        np.testing.assert_allclose(corrected, result, rtol=2e-6, atol=2e-6)
 
     def test_dce_interpolation_and_sinc_normalization(self):
         records = prepare_annotation_records([

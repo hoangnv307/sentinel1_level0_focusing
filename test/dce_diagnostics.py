@@ -25,7 +25,7 @@ from sentinel1_processing.dce import (
     _fine_dce_from_accumulators,
     _stream_accc_from_segments,
 )
-from sentinel1_processing.range_compression import compress_range
+from sentinel1_processing.range_compression import compress_range, estimate_iq_bias
 
 
 DATA_FILE = Path(
@@ -81,7 +81,7 @@ def _range_times(metadata, sample_count, sample_rate_hz, suppressed_time_s):
     )
 
 
-def _estimate_records(output_support):
+def _estimate_records(output_support, correct_iq_bias=True):
     level0 = sentinel1decoder.Level0File(str(DATA_FILE))
     metadata13 = level0.get_acquisition_chunk_metadata(13)
     metadata14 = level0.get_acquisition_chunk_metadata(14)
@@ -98,20 +98,24 @@ def _estimate_records(output_support):
     }
 
     raw13 = np.load(CHUNK13_NPY, mmap_mode="r")
+    iq_bias13 = estimate_iq_bias(raw13) if correct_iq_bias else 0.0j
     compressed13, range_times13 = compress_range(
         raw13,
         _range_times(metadata13, raw13.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
         output=output_support,
+        iq_bias=iq_bias13,
     )
     del raw13
 
     raw14 = level0.get_acquisition_chunk_data(14)
+    iq_bias14 = estimate_iq_bias(raw14) if correct_iq_bias else 0.0j
     compressed14, range_times14 = compress_range(
         raw14,
         _range_times(metadata14, raw14.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
         output=output_support,
+        iq_bias=iq_bias14,
     )
     del raw14
     gc.collect()
@@ -141,7 +145,10 @@ def _estimate_records(output_support):
     config = estimator.config
     del scene, compressed13, compressed14
     gc.collect()
-    return records, range_times13, 1.0 / pri_s, alignment, accumulators, config
+    return (
+        records, range_times13, 1.0 / pri_s, alignment, accumulators, config,
+        (iq_bias13, iq_bias14),
+    )
 
 
 def _sweep_range_layouts(accumulators, range_times, prf_hz, config):
@@ -228,10 +235,10 @@ def _refit(record, sigma, min_coherence, weighted_unwrap, prf_hz):
     return coefficients, fine, used, fit_rms_hz
 
 
-def run(show=True, output_support="valid"):
+def run(show=True, output_support="valid", correct_iq_bias=True):
     started = time.perf_counter()
-    records, evaluation_times, prf_hz, alignment, accumulators, config = (
-        _estimate_records(output_support)
+    records, evaluation_times, prf_hz, alignment, accumulators, config, iq_biases = (
+        _estimate_records(output_support, correct_iq_bias)
     )
     if len(records) != 3:
         raise AssertionError(f"Expected three DCE records, got {len(records)}.")
@@ -283,6 +290,7 @@ def run(show=True, output_support="valid"):
     layout_results.to_csv(OUTPUT_DIR / "range_layout_metrics.csv", index=False)
     print("\nAlignment:")
     print("Range-compression support:", output_support)
+    print("I/Q bias correction:", correct_iq_bias, iq_biases)
     print(pd.DataFrame(alignment).to_string(index=False))
     print("\nMetrics:")
     print(results.to_string(index=False, float_format=lambda value: f"{value:.6g}"))
@@ -324,5 +332,12 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--support", choices=("valid", "same"), default="valid")
+    parser.add_argument(
+        "--no-iq-bias", action="store_false", dest="iq_bias", default=True
+    )
     arguments = parser.parse_args()
-    run(show=not arguments.no_show, output_support=arguments.support)
+    run(
+        show=not arguments.no_show,
+        output_support=arguments.support,
+        correct_iq_bias=arguments.iq_bias,
+    )

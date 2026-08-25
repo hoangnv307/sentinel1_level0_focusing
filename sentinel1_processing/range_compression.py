@@ -4,6 +4,14 @@ import numpy as np
 from scipy.fft import fft, ifft
 
 
+def estimate_iq_bias(radar_data):
+    """Estimate the constant I/Q mean used by the DAD bias correction."""
+    data = np.asarray(radar_data)
+    if data.ndim != 2 or data.size == 0:
+        raise ValueError("radar_data must be a non-empty 2-D array.")
+    return complex(np.mean(data, dtype=np.complex128))
+
+
 def compress_range(
     radar_data,
     raw_slant_range_times_s,
@@ -14,8 +22,9 @@ def compress_range(
     pulse_length_s,
     batch_lines=256,
     output="valid",
+    iq_bias=0.0j,
 ):
-    """Apply the linear matched filter and return ``valid`` or ``same`` support."""
+    """Apply optional I/Q de-biasing and the linear range matched filter."""
     if output not in {"valid", "same"}:
         raise ValueError("output must be 'valid' or 'same'.")
     n_azimuth, n_range = radar_data.shape
@@ -55,7 +64,7 @@ def compress_range(
 
     for a0 in range(0, n_azimuth, batch_lines):
         a1 = min(a0 + batch_lines, n_azimuth)
-        spectrum = fft(radar_data[a0:a1], n=fft_size, axis=1)
+        spectrum = fft(radar_data[a0:a1] - iq_bias, n=fft_size, axis=1)
         filtered = ifft(spectrum * filter_fft[None, :], axis=1)
         compressed[a0:a1] = filtered[:, output_slice]
 
