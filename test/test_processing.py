@@ -3,6 +3,9 @@ import unittest
 import numpy as np
 
 from sentinel1_processing.dce import (
+    AzimuthDCEBlock,
+    DCERecord,
+    compare_annotation_dce,
     evaluate_annotation_dce,
     prepare_annotation_records,
 )
@@ -32,6 +35,19 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_allclose(result[0], same[1:-2], rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[1:-2])
 
+        same_result, same_times = compress_range(
+            data,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            batch_lines=1,
+            output="same",
+        )
+        np.testing.assert_allclose(same_result[0], same, rtol=2e-6, atol=2e-6)
+        np.testing.assert_array_equal(same_times, times)
+
     def test_dce_interpolation_and_sinc_normalization(self):
         records = prepare_annotation_records([
             {"azimuthTime": "2025-01-01T00:00:00", "t0": 0.0,
@@ -46,6 +62,22 @@ class ProcessingTest(unittest.TestCase):
         )
         _, table = build_sinc_table()
         np.testing.assert_allclose(table.sum(axis=1), 1.0)
+
+        estimate = DCERecord(
+            block=AzimuthDCEBlock(0, 2, 1.0, middle, middle, middle),
+            t0_s=0.0,
+            range_blocks=[],
+            fine_baseband_hz=np.array([0.0]),
+            fine_unwrapped_hz=np.array([0.0]),
+            fine_absolute_hz=np.array([0.0]),
+            data_dc_polynomial=np.array([2.0, 3.0]),
+            coherence=np.array([0.75]),
+            rms_error_hz=0.5,
+        )
+        comparison = compare_annotation_dce(
+            [records[0]], [estimate], [0.0, 1.0], prf_hz=1000.0
+        )[0]
+        self.assertAlmostEqual(comparison["rmse_hz"], np.sqrt(2.5))
 
 
 if __name__ == "__main__":

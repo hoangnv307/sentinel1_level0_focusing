@@ -13,8 +13,11 @@ def compress_range(
     pulse_ramp_rate_hz_per_s,
     pulse_length_s,
     batch_lines=256,
+    output="valid",
 ):
-    """Apply the linear matched filter and retain its valid support."""
+    """Apply the linear matched filter and return ``valid`` or ``same`` support."""
+    if output not in {"valid", "same"}:
+        raise ValueError("output must be 'valid' or 'same'.")
     n_azimuth, n_range = radar_data.shape
     num_tx_samples = int(np.ceil(pulse_length_s * sample_rate_hz))
     tx_time = (
@@ -38,17 +41,22 @@ def compress_range(
     same_start = (num_tx_samples - 1) // 2
     valid_start = same_start
     valid_stop = n_range - ((num_tx_samples - 1) - same_start)
-    compressed = np.empty(
-        (n_azimuth, valid_stop - valid_start),
-        dtype=np.complex64,
+    output_slice = (
+        slice(same_start + valid_start, same_start + valid_stop)
+        if output == "valid"
+        else slice(same_start, same_start + n_range)
     )
+    output_times = (
+        np.asarray(raw_slant_range_times_s)[valid_start:valid_stop]
+        if output == "valid"
+        else np.asarray(raw_slant_range_times_s)
+    )
+    compressed = np.empty((n_azimuth, output_times.size), dtype=np.complex64)
 
     for a0 in range(0, n_azimuth, batch_lines):
         a1 = min(a0 + batch_lines, n_azimuth)
         spectrum = fft(radar_data[a0:a1], n=fft_size, axis=1)
         filtered = ifft(spectrum * filter_fft[None, :], axis=1)
-        compressed[a0:a1] = filtered[
-            :, same_start + valid_start:same_start + valid_stop
-        ]
+        compressed[a0:a1] = filtered[:, output_slice]
 
-    return compressed, np.asarray(raw_slant_range_times_s)[valid_start:valid_stop]
+    return compressed, output_times

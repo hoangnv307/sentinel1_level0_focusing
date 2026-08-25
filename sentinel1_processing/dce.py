@@ -122,19 +122,20 @@ class DCEConfig:
         - 6000-line DCE azimuth blocks are directly recovered from the
           fineDceAzimuthStart/Stop duration and PRF.
         - DCE block starts follow the global sliced-product timeline rule.
-        - 1000 range samples is a starting estimate suggested by the first
-          fine-DCE center being ~500 samples from t0. It is NOT claimed as a
-          published IPF parameter.
+        - 1250 range samples minimizes the mean annotation RMSE in the supplied
+          S6 scene among the tested 750/1000/1250/1500-sample layouts. It is
+          NOT claimed as a published IPF parameter.
         """
         return cls(
             azimuth_block_size_lines=6000,
             num_range_blocks=20,
-            range_block_size_samples=1000,
+            range_block_size_samples=1250,
             azimuth_placement="slice_timeline",
             azimuth_spacing_lines=None,
             unwrap_fft_length=4096,
             polynomial_degree=2,
             rms_threshold_hz=20.0,
+            outlier_sigma=3.0,
         )
 
 
@@ -1841,6 +1842,67 @@ def evaluate_annotation_dce(
     alpha = (time_s - times[lo]) / (times[hi] - times[lo])
     return (1.0 - alpha) * evaluate(records[lo]) + alpha * evaluate(records[hi])
 
+
+def compare_annotation_dce(
+    annotation_records: Sequence[dict],
+    estimated_records: Sequence[DCERecord],
+    slant_range_times_s: ArrayLike,
+    *,
+    prf_hz: Optional[float] = None,
+) -> list[dict]:
+    """Compare each annotation polynomial with the nearest estimated record."""
+    if not annotation_records or not estimated_records:
+        raise ValueError("annotation_records and estimated_records must not be empty.")
+
+    tau = np.asarray(slant_range_times_s, dtype=np.float64)
+    comparisons = []
+    for index, annotation in enumerate(annotation_records, start=1):
+        estimated = min(
+            estimated_records,
+            key=lambda record: abs(
+                record.block.azimuth_time_s - annotation["azimuth_s"]
+            ),
+        )
+        reference_hz = evaluate_annotation_dce(
+            [annotation], annotation["azimuth_s"], tau
+        )
+        estimated_hz = estimated.evaluate(tau)
+        error_hz = estimated_hz - reference_hz
+
+        ambiguity_hz = 0.0
+        if prf_hz is not None:
+            ambiguity_hz = float(
+                np.rint(-np.median(error_hz) / prf_hz) * prf_hz
+            )
+        adjusted_error_hz = error_hz + ambiguity_hz
+
+        comparisons.append({
+            "record": index,
+            "range_times_s": tau,
+            "annotation_hz": reference_hz,
+            "estimated_hz": estimated_hz,
+            "annotation_coefficients": np.asarray(
+                annotation["dataDcPolynomial"], dtype=np.float64
+            ),
+            "estimated_coefficients": estimated.data_dc_polynomial.copy(),
+            "azimuth_time_error_ms": 1e3 * (
+                estimated.block.azimuth_time_s - annotation["azimuth_s"]
+            ),
+            "bias_hz": float(np.mean(error_hz)),
+            "mae_hz": float(np.mean(np.abs(error_hz))),
+            "rmse_hz": float(np.sqrt(np.mean(error_hz**2))),
+            "max_abs_error_hz": float(np.max(np.abs(error_hz))),
+            "integer_prf_adjustment_hz": ambiguity_hz,
+            "ambiguity_adjusted_rmse_hz": float(
+                np.sqrt(np.mean(adjusted_error_hz**2))
+            ),
+            "fit_rms_hz": estimated.rms_error_hz,
+            "mean_coherence": float(np.mean(estimated.coherence)),
+            "absolute_ambiguity_resolved": estimated.absolute_ambiguity_resolved,
+        })
+
+    return comparisons
+
 def records_summary(records: Sequence[DCERecord]) -> list[dict]:
     """Return a notebook-friendly list of dictionaries."""
     out: list[dict] = []
@@ -2027,6 +2089,7 @@ __all__ = [
     "utc_iso_to_gps_seconds",
     "prepare_annotation_records",
     "evaluate_annotation_dce",
+    "compare_annotation_dce",
     "records_summary",
 ]
 
