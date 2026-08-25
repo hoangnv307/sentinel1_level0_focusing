@@ -250,7 +250,6 @@ def run(show=True, output_support="valid"):
             evaluation_times - T0_S,
             annotation["dataDcPolynomial"],
         )
-        variants = []
         for name, sigma, min_coherence, weighted_unwrap in VARIANTS:
             coefficients, fine, used, fit_rms_hz = _refit(
                 record, sigma, min_coherence, weighted_unwrap, prf_hz
@@ -274,8 +273,7 @@ def run(show=True, output_support="valid"):
                 "C1": coefficients[1],
                 "C2": coefficients[2],
             })
-            variants.append((name, estimated_hz, fine, used))
-        plot_data[record_index] = (record, annotation_hz, variants)
+        plot_data[record_index] = annotation_hz
 
     results = pd.DataFrame(rows)
     results.to_csv(OUTPUT_DIR / "metrics.csv", index=False)
@@ -294,35 +292,21 @@ def run(show=True, output_support="valid"):
     print("\nRange-layout sweep (MAD 3.0):")
     print(layout_results.to_string(index=False, float_format=lambda value: f"{value:.6g}"))
 
-    for record_index, (record, annotation_hz, variants) in plot_data.items():
+    for record_index, annotation_hz in plot_data.items():
         figure, axis = plt.subplots(figsize=(10, 7))
         range_ms = evaluation_times * 1e3
         axis.plot(range_ms, annotation_hz, color="black", linewidth=2.5,
-                  label="Annotation polynomial")
-        for name, estimated_hz, _, _ in variants:
-            axis.plot(range_ms, estimated_hz, linewidth=1.4, label=name)
-
-        fine = variants[0][2]
-        baseline_used = variants[0][3]
-        scatter = axis.scatter(
-            record.range_times_s[baseline_used] * 1e3,
-            fine[baseline_used],
-            c=record.coherence[baseline_used],
-            cmap="viridis", edgecolors="black", linewidths=0.3,
-            label="Fine DCE accepted (baseline)", zorder=5,
-        )
-        rejected = ~baseline_used
-        axis.scatter(
-            record.range_times_s[rejected] * 1e3,
-            fine[rejected], marker="x", s=70, color="red",
-            label="Fine DCE rejected (baseline)", zorder=6,
-        )
-        figure.colorbar(scatter, ax=axis, label="Lag-one coherence")
+                  label="Annotation")
+        curves = dict(layout_curves[record_index])
+        axis.plot(range_ms, curves["full_B1000"], linewidth=1.8,
+                  label="Before fix (B=1000)")
+        axis.plot(range_ms, curves["full_B1250"], linewidth=1.8,
+                  label="After fix (B=1250)")
         axis.set_title(f"DCE record {record_index}: polynomial comparison")
         axis.set_xlabel("Slant-range time [ms]")
         axis.set_ylabel("Doppler centroid [Hz]")
         axis.grid(True, alpha=0.25)
-        axis.legend(fontsize=8)
+        axis.legend()
         figure.tight_layout()
         output = OUTPUT_DIR / f"dce_record_{record_index}.png"
         figure.savefig(output, dpi=160)
@@ -331,25 +315,6 @@ def run(show=True, output_support="valid"):
             plt.show()
         else:
             plt.close(figure)
-
-        layout_figure, layout_axis = plt.subplots(figsize=(10, 7))
-        layout_axis.plot(range_ms, annotation_hz, color="black", linewidth=2.5,
-                         label="Annotation polynomial")
-        for name, estimated_hz in layout_curves[record_index]:
-            layout_axis.plot(range_ms, estimated_hz, linewidth=1.3, label=name)
-        layout_axis.set_title(f"DCE record {record_index}: range-layout sweep")
-        layout_axis.set_xlabel("Slant-range time [ms]")
-        layout_axis.set_ylabel("Doppler centroid [Hz]")
-        layout_axis.grid(True, alpha=0.25)
-        layout_axis.legend(fontsize=8)
-        layout_figure.tight_layout()
-        layout_output = OUTPUT_DIR / f"dce_record_{record_index}_range_layouts.png"
-        layout_figure.savefig(layout_output, dpi=160)
-        print("Saved:", layout_output)
-        if show:
-            plt.show()
-        else:
-            plt.close(layout_figure)
 
     print(f"Total runtime: {time.perf_counter() - started:.2f} s")
     return results
