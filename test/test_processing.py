@@ -1,13 +1,17 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
+from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
+from sentinel1_processing.azimuth_compression import compress_azimuth_block
 from sentinel1_processing.dce import (
     AzimuthDCEBlock,
     DCERecord,
     compare_annotation_dce,
     evaluate_annotation_dce,
     prepare_annotation_records,
+    resolve_absolute_dce_with_geometry,
 )
 from sentinel1_processing.range_compression import compress_range, estimate_iq_bias
 from sentinel1_processing.rcmc import build_sinc_table
@@ -32,7 +36,8 @@ class ProcessingTest(unittest.TestCase):
         replica = np.exp(2j * np.pi * (0.5 * tx_time + 0.25 * tx_time**2))
         matched_filter = np.conjugate(replica[::-1]) / np.linalg.norm(replica)
         same = np.convolve(data[0], matched_filter, mode="same")
-        np.testing.assert_allclose(result[0], same[1:-2], rtol=2e-6, atol=2e-6)
+        valid = np.convolve(data[0], matched_filter, mode="valid")
+        np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[1:-2])
 
         same_result, same_times = compress_range(
@@ -64,6 +69,61 @@ class ProcessingTest(unittest.TestCase):
             iq_bias=2.0 - 3.0j,
         )
         np.testing.assert_allclose(corrected, result, rtol=2e-6, atol=2e-6)
+
+    def test_absolute_dce_uses_first_geometry_range_block(self):
+        absolute, coefficients, _, ambiguity, _, _ = (
+            resolve_absolute_dce_with_geometry(
+                [0.0, 1.0, 2.0],
+                [200.0, 210.0, 220.0],
+                [1200.0, 100.0, 110.0],
+                1000.0,
+                t0_s=0.0,
+                degree=1,
+            )
+        )
+
+        self.assertEqual(ambiguity, 1)
+        np.testing.assert_allclose(absolute, [1200.0, 1210.0, 1220.0])
+        np.testing.assert_allclose(
+            np.polynomial.polynomial.polyval([0.0, 1.0, 2.0], coefficients),
+            absolute,
+        )
+
+    def test_positive_azimuth_filter_focuses_point_target(self):
+        n = 64
+        sample_period_s = 1.0 / 1600.0
+        wavelength_m = 0.055
+        slant_ranges_m = np.array([800_000.0])
+        velocity_mps = np.array([7200.0])
+        centroid_hz = np.array([30.0])
+        frequency_hz = fftshift(fftfreq(n, d=sample_period_s)) + centroid_hz[0]
+        d = np.sqrt(
+            1.0 - (wavelength_m * frequency_hz / (2.0 * velocity_mps[0])) ** 2
+        )
+        point_echo_spectrum = np.exp(
+            -4.0j * np.pi * slant_ranges_m[0] * d / wavelength_m
+        )
+        block = ifft(ifftshift(point_echo_spectrum))[:, None].astype(np.complex64)
+
+        identity = lambda data, *args, **kwargs: data
+        with (
+            patch("sentinel1_processing.azimuth_compression.apply_src", identity),
+            patch("sentinel1_processing.azimuth_compression.apply_rcmc", identity),
+        ):
+            focused = compress_azimuth_block(
+                block,
+                centroid_hz,
+                velocity_mps,
+                azimuth_sample_period_s=sample_period_s,
+                range_sample_period_s=1.0,
+                range_sample_frequency_hz=1.0,
+                speed_of_light_mps=299_792_458.0,
+                wavelength_m=wavelength_m,
+                slant_ranges_m=slant_ranges_m,
+            )
+
+        self.assertAlmostEqual(abs(focused[0, 0]), 1.0, places=5)
+        self.assertLess(np.max(np.abs(focused[1:, 0])), 1e-5)
 
     def test_dce_interpolation_and_sinc_normalization(self):
         records = prepare_annotation_records([

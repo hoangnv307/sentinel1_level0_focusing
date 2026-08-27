@@ -51,7 +51,7 @@ def compress_range(
     valid_start = same_start
     valid_stop = n_range - ((num_tx_samples - 1) - same_start)
     output_slice = (
-        slice(same_start + valid_start, same_start + valid_stop)
+        slice(num_tx_samples - 1, n_range)
         if output == "valid"
         else slice(same_start, same_start + n_range)
     )

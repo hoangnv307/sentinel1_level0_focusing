@@ -1198,11 +1198,8 @@ def resolve_absolute_dce_with_geometry(
     valid_mask
     rms_error_hz
 
-    Implementation note
-    -------------------
-    [Inference] The public DAD text does not expose every operational rounding
-    detail. Here the ambiguity number is selected as the nearest integer PRF
-    multiple to the mean geometry-data difference.
+    The ambiguity follows DAD Eq. 5-30: round the geometry DC of the first
+    range block to the nearest PRF multiple.
     """
     tau = np.asarray(range_times_s, dtype=np.float64)
     fine = np.asarray(fine_unwrapped_hz, dtype=np.float64)
@@ -1211,9 +1208,7 @@ def resolve_absolute_dce_with_geometry(
     if tau.shape != fine.shape or tau.shape != geom.shape:
         raise ValueError("range_times_s, fine_unwrapped_hz and geometry_hz must match.")
 
-    # Robust ambiguity estimate over all available range blocks rather than a
-    # single noisy point.
-    ambiguity_number = int(np.rint(np.median((geom - fine) / prf_hz)))
+    ambiguity_number = int(np.rint(geom[0] / prf_hz))
     absolute_data = fine + ambiguity_number * prf_hz
 
     geom_coeff, _, _ = robust_polynomial_fit(
@@ -1225,7 +1220,8 @@ def resolve_absolute_dce_with_geometry(
         max_iterations=max_fit_iterations,
     )
 
-    delta = absolute_data - geom
+    geometry_fitted = np.polynomial.polynomial.polyval(tau - t0_s, geom_coeff)
+    delta = absolute_data - geometry_fitted
 
     delta_coeff, valid_mask, _ = robust_polynomial_fit(
         tau,
