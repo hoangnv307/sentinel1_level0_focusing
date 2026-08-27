@@ -147,6 +147,18 @@ class Estimator:
         """Build the DAD Section 9.10 estimator from a decoded L0 product."""
         return cls.from_ephemeris(level0_product.ephemeris, wavelength_m)
 
+    def validate_time_coverage(self, azimuth_times_s):
+        """Require all azimuth times to lie inside the ephemeris interval."""
+        times = np.asarray(azimuth_times_s, dtype=np.float64)
+        if times.ndim != 1 or times.size == 0:
+            raise ValueError("azimuth_times_s must be a non-empty 1-D array.")
+        if np.any(np.diff(times) <= 0):
+            raise ValueError("azimuth_times_s must be strictly increasing.")
+        if times[0] < self.orbit_times_s[0] or times[-1] > self.orbit_times_s[-1]:
+            raise ValueError(
+                "Azimuth times are outside the available ephemeris interval."
+            )
+
     def position(self, time_s):
         """Interpolated ECEF spacecraft position [m]."""
         return np.asarray(self._position_spline(time_s), dtype=np.float64)
@@ -545,11 +557,5 @@ class Estimator:
             control_points=diagnostics,
         )
         return result
-
-
-PreciseEffectiveVelocity = Estimator
-VrControlPoint = ControlPoint
-VrBlockResult = BlockResult
-make_estimator_from_notebook = Estimator.from_level0_product
 
 __all__ = ["Estimator", "ControlPoint", "BlockResult"]

@@ -18,7 +18,7 @@ Important distinction
 The DAD publishes the DCE algorithm, but several DCE block dimensions and
 spacings are INTERNAL/configurable IPF parameters.
 
-The ``DCEConfig.s6_research()`` profile therefore contains two kinds of values:
+The ``Config.for_stripmap_s6()`` profile therefore contains two kinds of values:
 
 DAD / product-supported:
 - quadratic DC polynomial for single-swath processing
@@ -59,7 +59,7 @@ GeometryDcProvider = Callable[[float, np.ndarray], np.ndarray]
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class DCEConfig:
+class Config:
     """Configuration for Sentinel-1 DCE processing.
 
     Parameters marked as research/inferred are deliberately explicit so the
@@ -115,16 +115,11 @@ class DCEConfig:
     unwrap_weighting: Literal["uniform", "coherence"] = "uniform"
 
     @classmethod
-    def s6_research(cls) -> "DCEConfig":
-        """Research profile inferred from the supplied Sentinel-1 S6 scene.
+    def for_stripmap_s6(cls) -> "Config":
+        """Parameters used for the supplied Stripmap S6 scene.
 
-        [Inference]
-        - 6000-line DCE azimuth blocks are directly recovered from the
-          fineDceAzimuthStart/Stop duration and PRF.
-        - DCE block starts follow the global sliced-product timeline rule.
-        - 1250 range samples minimizes the mean annotation RMSE in the supplied
-          S6 scene among the tested 750/1000/1250/1500-sample layouts. It is
-          NOT claimed as a published IPF parameter.
+        The polynomial degree and quality limit come from DAD/AUX_PP1. Block
+        sizes come from the supplied scene and are not published IPF values.
         """
         return cls(
             azimuth_block_size_lines=6000,
@@ -138,9 +133,8 @@ class DCEConfig:
             outlier_sigma=3.0,
         )
 
-
 @dataclass(frozen=True)
-class DCESegment:
+class Segment:
     """One contiguous range-compressed acquisition segment/chunk.
 
     A segment may have its own SWST and therefore its own fast-time/range grid.
@@ -187,7 +181,7 @@ class DCESegment:
 class SegmentAlignment:
     """Prepared mapping from one segment range grid to the common DCE grid."""
 
-    segment: DCESegment
+    segment: Segment
     global_start_line: int
     global_stop_line: int
     source_start_index: float
@@ -330,7 +324,7 @@ class DCERecord:
 def build_azimuth_blocks(
     n_lines: int,
     prf_hz: float,
-    config: DCEConfig,
+    config: Config,
     azimuth_times_s: Optional[ArrayLike] = None,
     *,
     azimuth_time_offset_s: float = 0.0,
@@ -508,7 +502,7 @@ def build_azimuth_blocks(
 def build_range_blocks(
     n_range_samples: int,
     slant_range_times_s: ArrayLike,
-    config: DCEConfig,
+    config: Config,
 ) -> list[RangeDCEBlock]:
     """Build DCE range blocks according to DAD §5.6.
 
@@ -710,7 +704,7 @@ def fine_dce_cdce(
 # ---------------------------------------------------------------------------
 
 def prepare_dce_segments(
-    segments: Sequence[DCESegment],
+    segments: Sequence[Segment],
     prf_hz: float,
     *,
     lanczos_radius: int = 8,
@@ -1250,16 +1244,16 @@ def resolve_absolute_dce_with_geometry(
 
 
 # ---------------------------------------------------------------------------
-# High-level notebook API
+# High-level API
 # ---------------------------------------------------------------------------
 
-class Sentinel1DCE:
-    """High-level, notebook-friendly Sentinel-1 DCE estimator."""
+class Estimator:
+    """Estimate Doppler centroid from range-compressed data."""
 
     def __init__(
         self,
         prf_hz: float,
-        config: DCEConfig,
+        config: Config,
     ) -> None:
         if prf_hz <= 0:
             raise ValueError("prf_hz must be positive.")
@@ -1268,11 +1262,11 @@ class Sentinel1DCE:
         self.config = config
 
     @classmethod
-    def for_s6_research(cls, prf_hz: float) -> "Sentinel1DCE":
-        """Convenience constructor for the reverse-engineered S6 profile."""
+    def for_stripmap_s6(cls, prf_hz: float) -> "Estimator":
+        """Build an estimator with the Stripmap S6 processing parameters."""
         return cls(
             prf_hz=prf_hz,
-            config=DCEConfig.s6_research(),
+            config=Config.for_stripmap_s6(),
         )
 
     def build_layout(
@@ -1527,7 +1521,7 @@ class Sentinel1DCE:
 
     def prepare_segments(
         self,
-        segments: Sequence[DCESegment],
+        segments: Sequence[Segment],
         *,
         lanczos_radius: int = 8,
         azimuth_gap_tolerance_s: Optional[float] = None,
@@ -1542,7 +1536,7 @@ class Sentinel1DCE:
 
     def estimate_segments(
         self,
-        segments: Sequence[DCESegment],
+        segments: Sequence[Segment],
         *,
         azimuth_time_offset_s: float = 0.0,
         t0_s: Optional[float] = None,
@@ -1748,7 +1742,7 @@ class Sentinel1DCE:
         return (1.0 - alpha) * f0 + alpha * f1
 
     @staticmethod
-    def evaluate_for_line(
+    def evaluate_at_line(
         records: Sequence[DCERecord],
         *,
         line_index: int,
@@ -1757,7 +1751,7 @@ class Sentinel1DCE:
         azimuth_time_offset_s: float = 0.0,
         interpolation: Literal["linear", "nearest"] = "linear",
     ) -> np.ndarray:
-        """Notebook convenience wrapper analogous to ``dce_for_block(index)``."""
+        """Evaluate Doppler centroid on the range grid of one azimuth line."""
         az = np.asarray(azimuth_times_s, dtype=np.float64)
 
         if line_index < 0 or line_index >= az.size:
@@ -1765,7 +1759,7 @@ class Sentinel1DCE:
 
         t = float(az[line_index] + azimuth_time_offset_s)
 
-        return Sentinel1DCE.evaluate_records(
+        return Estimator.evaluate_records(
             records,
             azimuth_time_s=t,
             slant_range_times_s=slant_range_times_s,
@@ -1930,7 +1924,7 @@ def _self_test() -> None:
     # --- Global sliced-product scheduler: 3/2/2 records over three slices ---
     schedule_prf = 1000.0
     schedule_lines = np.arange(3000, dtype=np.float64) / schedule_prf
-    schedule_config = DCEConfig(
+    schedule_config = Config(
         azimuth_block_size_lines=100,
         num_range_blocks=1,
         azimuth_placement="slice_timeline",
@@ -1970,7 +1964,7 @@ def _self_test() -> None:
 
     tau = 0.006 + np.arange(n_rg) / 20e6
 
-    cfg = DCEConfig(
+    cfg = Config(
         azimuth_block_size_lines=n_az,
         num_range_blocks=6,
         range_block_size_samples=20,
@@ -2017,17 +2011,17 @@ def _self_test() -> None:
         )
     )
 
-    seg1 = DCESegment(data1, tau1, eta1, name="seg1")
-    seg2 = DCESegment(data2, tau2, eta2, name="seg2")
+    seg1 = Segment(data1, tau1, eta1, name="seg1")
+    seg2 = Segment(data2, tau2, eta2, name="seg2")
 
-    cfg2 = DCEConfig(
+    cfg2 = Config(
         azimuth_block_size_lines=n1 + n2,
         num_range_blocks=5,
         range_block_size_samples=20,
         azimuth_placement="custom",
         unwrap_fft_length=1024,
     )
-    est = Sentinel1DCE(prf, cfg2)
+    est = Estimator(prf, cfg2)
     recs, prepared = est.estimate_segments(
         [seg1, seg2],
         custom_azimuth_starts=[0],
@@ -2047,7 +2041,7 @@ def _self_test() -> None:
         raise RuntimeError("Multi-segment DCE self-test failed.")
 
     # A missing azimuth line between segments must not become a lag-one pair.
-    seg2_gap = DCESegment(data2, tau2, eta2 + 1.0 / prf, name="seg2_gap")
+    seg2_gap = Segment(data2, tau2, eta2 + 1.0 / prf, name="seg2_gap")
     prepared_gap = est.prepare_segments([seg1, seg2_gap])
     az_blocks, _ = est.build_layout(
         n_azimuth_lines=n1 + n2,
@@ -2065,14 +2059,11 @@ def _self_test() -> None:
         raise RuntimeError("Azimuth-gap self-test failed.")
 
 
-Config = DCEConfig
-Segment = DCESegment
 Alignment = SegmentAlignment
 PreparedScene = PreparedSegmentScene
 AzimuthBlock = AzimuthDCEBlock
 RangeBlock = RangeDCEBlock
 Estimate = DCERecord
-Estimator = Sentinel1DCE
 estimate_fine_dc = fine_dce_cdce
 prepare_segments = prepare_dce_segments
 unwrap_fine_dc = unwrap_fine_dce_dad
@@ -2111,4 +2102,4 @@ __all__ = [
 
 if __name__ == "__main__":
     _self_test()
-    print("sentinel1_processing.dce self-test: PASS")
+    print("sentinel1_processing.doppler_centroid_estimation self-test: PASS")

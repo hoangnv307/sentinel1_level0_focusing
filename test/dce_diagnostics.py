@@ -16,7 +16,7 @@ import pandas as pd
 import sentinel1decoder
 
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
-import sentinel1_processing.range_compression as range_compression
+import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
 
 
@@ -91,7 +91,7 @@ def _estimate_records(output_support, correct_iq_bias=True):
 
     raw13 = np.load(CHUNK13_NPY, mmap_mode="r")
     iq_bias13 = raw_data_correction.estimate_iq_bias(raw13) if correct_iq_bias else 0.0j
-    compressed13, range_times13 = range_compression.compress(
+    compressed13, range_times13 = azimuth_pre_processing.range.compression.compress(
         raw13,
         _range_times(metadata13, raw13.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
@@ -102,7 +102,7 @@ def _estimate_records(output_support, correct_iq_bias=True):
 
     raw14 = level0.get_acquisition_chunk_data(14)
     iq_bias14 = raw_data_correction.estimate_iq_bias(raw14) if correct_iq_bias else 0.0j
-    compressed14, range_times14 = range_compression.compress(
+    compressed14, range_times14 = azimuth_pre_processing.range.compression.compress(
         raw14,
         _range_times(metadata14, raw14.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
@@ -114,7 +114,9 @@ def _estimate_records(output_support, correct_iq_bias=True):
 
     azimuth13 = _packet_times(metadata13)
     azimuth14 = _packet_times(metadata14)
-    estimator = doppler_centroid_estimation.Estimator.for_s6_research(prf_hz=1.0 / pri_s)
+    estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
+        prf_hz=1.0 / pri_s
+    )
     scene_stop_s = azimuth14[-1] + pri_s
     records, scene = estimator.estimate_segments(
         [

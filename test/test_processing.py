@@ -1,21 +1,47 @@
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
-import sentinel1_processing.azimuth_compression as azimuth_compression
+import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
+import sentinel1_processing.azimuth_processing as azimuth_processing
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
-import sentinel1_processing.range_compression as range_compression
+import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
-import sentinel1_processing.rcmc as rcmc
 
 
 class ProcessingTest(unittest.TestCase):
+    def test_public_api_follows_dad_processing_steps(self):
+        self.assertEqual(
+            azimuth_pre_processing.__all__,
+            ["azimuth_zero_padding", "range", "azimuth_forward_fft"],
+        )
+        self.assertEqual(
+            range_processing.__all__,
+            ["reference_function", "dependent_gain", "swst_bias"],
+        )
+        self.assertEqual(
+            azimuth_processing.__all__,
+            [
+                "secondary_range_compression",
+                "range_cell_migration_correction",
+                "azimuth_compression",
+                "processing_blocks",
+            ],
+        )
+        self.assertTrue(callable(azimuth_pre_processing.range.compression.compress))
+
     def test_range_compression_matches_linear_convolution(self):
         data = np.arange(16, dtype=np.float32)[None, :].astype(np.complex64)
         times = np.arange(data.shape[1], dtype=np.float64)
-        result, result_times = range_compression.compress(
+        reference_function = range_processing.reference_function.calculate(
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            fft_length=32,
+        )
+        result, result_times = azimuth_pre_processing.range.compression.compress(
             data,
             times,
             sample_rate_hz=4.0,
@@ -23,6 +49,7 @@ class ProcessingTest(unittest.TestCase):
             pulse_ramp_rate_hz_per_s=0.5,
             pulse_length_s=1.0,
             batch_lines=1,
+            range_reference_function=reference_function,
         )
 
         n_tx = 4
@@ -34,7 +61,7 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[1:-2])
 
-        same_result, same_times = range_compression.compress(
+        same_result, same_times = azimuth_pre_processing.range.compression.compress(
             data,
             times,
             sample_rate_hz=4.0,
@@ -52,7 +79,7 @@ class ProcessingTest(unittest.TestCase):
             raw_data_correction.estimate_iq_bias(np.full((2, 3), 2.0 - 3.0j)),
             2.0 - 3.0j,
         )
-        corrected, _ = range_compression.compress(
+        corrected, _ = azimuth_pre_processing.range.compression.compress(
             biased,
             times,
             sample_rate_hz=4.0,
@@ -63,6 +90,14 @@ class ProcessingTest(unittest.TestCase):
             iq_bias=2.0 - 3.0j,
         )
         np.testing.assert_allclose(corrected, result, rtol=2e-6, atol=2e-6)
+        gained = range_processing.dependent_gain.apply(
+            np.ones((1, 2), dtype=np.complex64), [2.0, 3.0]
+        )
+        np.testing.assert_array_equal(gained, [[2.0, 3.0]])
+        np.testing.assert_array_equal(
+            range_processing.swst_bias.correct([1.0, 2.0], 0.25),
+            [1.25, 2.25],
+        )
 
     def test_absolute_dce_uses_first_geometry_range_block(self):
         absolute, coefficients, _, ambiguity, _, _ = (
@@ -99,33 +134,31 @@ class ProcessingTest(unittest.TestCase):
         )
         block = ifft(ifftshift(point_echo_spectrum))[:, None].astype(np.complex64)
 
-        identity = lambda data, *args, **kwargs: data
-        with (
-            patch(
-                "sentinel1_processing.azimuth_compression."
-                "apply_secondary_range_compression",
-                identity,
-            ),
-            patch(
-                "sentinel1_processing.azimuth_compression."
-                "correct_range_cell_migration",
-                identity,
-            ),
-        ):
-            focused = azimuth_compression.compress(
-                block,
-                centroid_hz,
-                velocity_mps,
-                azimuth_sample_period_s=sample_period_s,
-                range_sample_period_s=1.0,
-                range_sample_frequency_hz=1.0,
-                speed_of_light_mps=299_792_458.0,
-                wavelength_m=wavelength_m,
-                slant_ranges_m=slant_ranges_m,
+        baseband_hz, range_doppler = (
+            azimuth_pre_processing.azimuth_forward_fft.apply(
+                block, sample_period_s
             )
+        )
+        focused = azimuth_processing.azimuth_compression.compress(
+            range_doppler,
+            baseband_hz,
+            centroid_hz,
+            velocity_mps,
+            wavelength_m=wavelength_m,
+            slant_ranges_m=slant_ranges_m,
+        )
 
         self.assertAlmostEqual(abs(focused[0, 0]), 1.0, places=5)
         self.assertLess(np.max(np.abs(focused[1:, 0])), 1e-5)
+        time_filter = (
+            azimuth_processing.azimuth_compression
+            .calculate_time_correction_filter(
+                frequency_hz[:, None], 0.25
+            )
+        )
+        np.testing.assert_allclose(
+            time_filter[:, 0], np.exp(2j * np.pi * frequency_hz * 0.25)
+        )
 
     def test_dce_interpolation_and_sinc_normalization(self):
         records = doppler_centroid_estimation.parse_annotation_records([
@@ -141,7 +174,10 @@ class ProcessingTest(unittest.TestCase):
             ),
             [2.0, 5.0],
         )
-        _, table = rcmc.build_interpolation_table()
+        _, table = (
+            azimuth_processing.range_cell_migration_correction
+            .build_interpolation_table()
+        )
         np.testing.assert_allclose(table.sum(axis=1), 1.0)
 
         estimate = doppler_centroid_estimation.Estimate(
