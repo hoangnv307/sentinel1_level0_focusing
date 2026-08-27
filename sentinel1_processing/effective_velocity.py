@@ -1,26 +1,4 @@
-"""
-sentinel1_processing.effective_velocity
-
-Numerical effective-radar-velocity estimator for space-borne SAR.
-
-Design basis
-------------
-- ESA Sentinel-1 L1 DAD, Sec. 9.10: V_r is the effective/pseudo radar velocity
-  used by the Range-Doppler hyperbolic range model and is updated with range
-  and azimuth processing block.
-- Wong, Tan & Yeo (IGARSS 2000): generate the actual instantaneous slant-range
-  history from orbit state vectors, fit a hyperbola, repeat at several ranges,
-  then fit a low-order polynomial V_r(R).
-
-The module is designed to plug into the existing Sentinel-1 notebook with a
-small API and return a V_r vector having the same shape as slant_range_vec_m.
-
-Important
----------
-This is a high-accuracy numerical reproduction of the documented principle.
-It is not ESA IPF source code. ESA's internal implementation details are not
-published in the DAD.
-"""
+"""Effective velocity from Sentinel-1 L1 DAD Section 9.10."""
 
 from __future__ import annotations
 
@@ -109,8 +87,7 @@ class Estimator:
         ellipsoid_a_m=WGS84_A_M,
         ellipsoid_b_m=WGS84_B_M,
     ):
-        """
-        Build directly from l0file.ephemeris used by the current notebook.
+        """Build an estimator from decoded Level-0 ephemeris records.
 
         Expected columns:
           POD Solution Data Timestamp
@@ -139,8 +116,6 @@ class Estimator:
             ellipsoid_a_m=ellipsoid_a_m,
             ellipsoid_b_m=ellipsoid_b_m,
         )
-
-    from_sentinel1_ephemeris = from_ephemeris
 
     @classmethod
     def from_level0_product(cls, level0_product, wavelength_m):
@@ -415,8 +390,7 @@ class Estimator:
         look_side="right",
         return_diagnostics=False,
     ):
-        """
-        Compute V_r(R, eta_c) for one azimuth processing block.
+        """Compute effective velocity for one azimuth processing block.
 
         Parameters
         ----------
@@ -425,11 +399,10 @@ class Estimator:
             as the ephemeris timestamps.
 
         slant_range_m : ndarray, shape (N_range,)
-            Slant-range vector used by the notebook.
+            Slant-range vector for the processing block.
 
         fdc_hz : None, scalar, or ndarray, shape (N_range,)
-            Doppler centroid versus range.  Pass the output of dce_for_block().
-            If None, zero Doppler is assumed.
+            Doppler centroid versus range. If None, zero Doppler is used.
 
         azimuth_bandwidth_hz : float
             Processed azimuth bandwidth, e.g. 1398 Hz for SM_SL1__1/S6.

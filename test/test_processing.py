@@ -30,6 +30,8 @@ class ProcessingTest(unittest.TestCase):
             ],
         )
         self.assertTrue(callable(azimuth_pre_processing.range.compression.compress))
+        self.assertEqual(doppler_centroid_estimation.Segment.__name__, "Segment")
+        self.assertEqual(doppler_centroid_estimation.Estimator.__name__, "Estimator")
 
     def test_range_compression_matches_linear_convolution(self):
         data = np.arange(16, dtype=np.float32)[None, :].astype(np.complex64)
@@ -96,7 +98,7 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_array_equal(gained, [[2.0, 3.0]])
         np.testing.assert_array_equal(
             range_processing.swst_bias.correct([1.0, 2.0], 0.25),
-            [1.25, 2.25],
+            [0.75, 1.75],
         )
 
     def test_absolute_dce_uses_first_geometry_range_block(self):

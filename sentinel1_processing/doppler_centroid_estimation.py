@@ -1,48 +1,10 @@
-"""
-sentinel1_processing.doppler_centroid_estimation
-===============================================
+"""Doppler Centroid Estimation from Sentinel-1 L1 DAD Section 5.
 
-Research-oriented Sentinel-1 Doppler Centroid Estimation (DCE) utilities.
-
-Basis
------
-ESA Sentinel-1 Level-1 Detailed Algorithm Definition (DAD), Section 5:
-- 5.2.2 Correlation Doppler Centroid Estimator (CDCE)
-- 5.3 Fine DC Estimates Unwrapping
-- 5.4 Absolute DC Estimation
-- 5.5 Polynomial Fitting / quality measurement
-- 5.6 Processing Block Dimensions
-
-Important distinction
----------------------
-The DAD publishes the DCE algorithm, but several DCE block dimensions and
-spacings are INTERNAL/configurable IPF parameters.
-
-The ``Config.for_stripmap_s6()`` profile therefore contains two kinds of values:
-
-DAD / product-supported:
-- quadratic DC polynomial for single-swath processing
-- CDCE lag-1 estimator
-- configurable azimuth/range block dimensions
-- configurable number of range blocks
-- RMS quality metric
-- 20-Hz RMS threshold from the supplied AUX_PP1
-- 20 fine range estimates observed in the supplied S6 product
-
-[Inference] Reverse-engineered for the supplied S6 scene:
-- azimuth DCE block length = 6000 lines
-- DCE block starts follow the global sliced-product timeline scheduler
-- nominal range block size = 1000 samples as a research starting point.
-  The exact IPF internal range-block configuration is not public.
-
-The module separates these assumptions from the core DAD algorithms so that
-they can be changed without touching the estimator itself.
+The Stripmap S6 block sizes come from the sample product because the DAD leaves
+these values configurable.
 """
 
 from __future__ import annotations
-
-__version__ = "2.2.0-slice-timeline"
-# BUILD_MARKER: MULTISEGMENT_SWST_ALIGNMENT_2026_08_21
 
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Literal, Optional, Sequence
@@ -62,8 +24,7 @@ GeometryDcProvider = Callable[[float, np.ndarray], np.ndarray]
 class Config:
     """Configuration for Sentinel-1 DCE processing.
 
-    Parameters marked as research/inferred are deliberately explicit so the
-    notebook can change them easily when more IPF behavior is reverse-engineered.
+    Parameters not fixed by the DAD remain explicit.
     """
 
     # DAD §5.6: configurable azimuth-block size.
@@ -84,10 +45,9 @@ class Config:
     # How DCE azimuth blocks are placed.
     # "spacing"  : regular configurable spacing, with tail coverage.
     # "slice_timeline": [Inference] global Sentinel-1 sliced-product schedule.
-    # "edge_mid_edge": legacy single-product research placement.
     # "custom"   : use explicit starts passed to build_azimuth_blocks().
     azimuth_placement: Literal[
-        "spacing", "slice_timeline", "edge_mid_edge", "custom"
+        "spacing", "slice_timeline", "custom"
     ] = "spacing"
 
     # DAD §5.6: azimuth spacing between DC estimates is configurable.
@@ -178,7 +138,7 @@ class Segment:
 
 
 @dataclass(frozen=True)
-class SegmentAlignment:
+class Alignment:
     """Prepared mapping from one segment range grid to the common DCE grid."""
 
     segment: Segment
@@ -191,14 +151,14 @@ class SegmentAlignment:
 
 
 @dataclass
-class PreparedSegmentScene:
+class PreparedScene:
     """Prepared multi-segment scene used by :meth:`estimate_segments`.
 
     The object stores only alignment metadata and the common range grid.  It
     does *not* materialize a huge fully aligned 2-D scene in memory.
     """
 
-    alignments: list[SegmentAlignment]
+    alignments: list[Alignment]
     common_slant_range_times_s: np.ndarray
     azimuth_times_s: np.ndarray
     range_spacing_s: float
@@ -215,7 +175,7 @@ class PreparedSegmentScene:
         return int(self.common_slant_range_times_s.size)
 
     def alignment_summary(self) -> list[dict]:
-        """Return notebook-friendly range-alignment diagnostics."""
+        """Return range-alignment values for each segment."""
         out: list[dict] = []
         for a in self.alignments:
             out.append(
@@ -238,7 +198,7 @@ class PreparedSegmentScene:
 
 
 @dataclass(frozen=True)
-class AzimuthDCEBlock:
+class AzimuthBlock:
     """One DCE azimuth processing block."""
 
     start_line: int
@@ -255,7 +215,7 @@ class AzimuthDCEBlock:
 
 
 @dataclass(frozen=True)
-class RangeDCEBlock:
+class RangeBlock:
     """One DCE range processing block."""
 
     start_sample: int
@@ -269,13 +229,13 @@ class RangeDCEBlock:
 
 
 @dataclass
-class DCERecord:
+class Estimate:
     """DCE result for one azimuth block."""
 
-    block: AzimuthDCEBlock
+    block: AzimuthBlock
     t0_s: float
 
-    range_blocks: list[RangeDCEBlock]
+    range_blocks: list[RangeBlock]
 
     # Fine/baseband DCE from CDCE, within the PRF ambiguity interval.
     fine_baseband_hz: np.ndarray
@@ -334,7 +294,7 @@ def build_azimuth_blocks(
     product_start_time_s: Optional[float] = None,
     product_stop_time_s: Optional[float] = None,
     zero_dop_minus_acq_time_s: Optional[float] = None,
-) -> list[AzimuthDCEBlock]:
+) -> list[AzimuthBlock]:
     """Build DCE azimuth blocks.
 
     DAD §5.6 states that block size and estimate spacing are configurable.
@@ -429,10 +389,6 @@ def build_azimuth_blocks(
         starts = sorted(set(starts))
         output_time_offset = zd_offset
 
-    elif placement == "edge_mid_edge":
-        starts = [0, n_lines // 2, n_lines - B]
-        output_time_offset = float(azimuth_time_offset_s)
-
     elif placement == "spacing":
         step = config.azimuth_spacing_lines
         if step is None or step <= 0:
@@ -462,7 +418,7 @@ def build_azimuth_blocks(
         last_start = n_lines - B
         starts = sorted({min(max(0, int(s)), last_start) for s in starts})
 
-    blocks: list[AzimuthDCEBlock] = []
+    blocks: list[AzimuthBlock] = []
 
     for start in starts:
         stop = start + B
@@ -486,7 +442,7 @@ def build_azimuth_blocks(
         t_center = 0.5 * (t_start + t_stop)
 
         blocks.append(
-            AzimuthDCEBlock(
+            AzimuthBlock(
                 start_line=start,
                 stop_line=stop,
                 center_line=start + 0.5 * B,
@@ -503,7 +459,7 @@ def build_range_blocks(
     n_range_samples: int,
     slant_range_times_s: ArrayLike,
     config: Config,
-) -> list[RangeDCEBlock]:
+) -> list[RangeBlock]:
     """Build DCE range blocks according to DAD §5.6.
 
     The DAD allows overlap and configures both block size and number of blocks.
@@ -572,7 +528,7 @@ def build_range_blocks(
 
     dtau = float(np.median(np.diff(tau)))
 
-    blocks: list[RangeDCEBlock] = []
+    blocks: list[RangeBlock] = []
     for start, stop in zip(starts, stops):
         start = int(start)
         stop = int(stop)
@@ -587,7 +543,7 @@ def build_range_blocks(
         center_tau = float(tau[start] + 0.5 * (stop - start) * dtau)
 
         blocks.append(
-            RangeDCEBlock(
+            RangeBlock(
                 start_sample=start,
                 stop_sample=stop,
                 center_sample=center_sample,
@@ -655,9 +611,9 @@ def _range_block_coherence(
     return float(np.clip(num / den, 0.0, 1.0))
 
 
-def fine_dce_cdce(
+def estimate_fine_dc(
     range_compressed_block: np.ndarray,
-    range_blocks: Sequence[RangeDCEBlock],
+    range_blocks: Sequence[RangeBlock],
     prf_hz: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """DAD §5.2.2 CDCE fine Doppler estimation.
@@ -703,15 +659,15 @@ def fine_dce_cdce(
 # Multi-segment range-grid alignment
 # ---------------------------------------------------------------------------
 
-def prepare_dce_segments(
+def prepare_segments(
     segments: Sequence[Segment],
     prf_hz: float,
     *,
     lanczos_radius: int = 8,
     range_spacing_rtol: float = 1e-6,
     azimuth_gap_tolerance_s: Optional[float] = None,
-) -> PreparedSegmentScene:
-    """Prepare acquisition segments having different SWST/range lengths.
+) -> PreparedScene:
+    """Align acquisition segments to one slant-range grid.
 
     The first chronological segment supplies the fixed reference fast-time
     grid. Each segment is mapped to this grid by a constant fractional sample
@@ -719,8 +675,6 @@ def prepare_dce_segments(
     same range sampling frequency; if not, this routine raises rather than
     silently resampling a sample-rate change.
 
-    For the S6 case discussed in the notebook, this exposes the ~81.25-sample
-    chunk-14 offset directly through ``alignment_summary()``.
     """
     if not segments:
         raise ValueError("segments must not be empty.")
@@ -751,7 +705,7 @@ def prepare_dce_segments(
     common_tau = np.asarray(segs[0].slant_range_times_s, dtype=np.float64).copy()
     common_start = float(common_tau[0])
 
-    alignments: list[SegmentAlignment] = []
+    alignments: list[Alignment] = []
     az_times: list[np.ndarray] = []
     global_line = 0
 
@@ -792,7 +746,7 @@ def prepare_dce_segments(
         stop_line = start_line + seg.num_azimuth_lines
 
         alignments.append(
-            SegmentAlignment(
+            Alignment(
                 segment=seg,
                 global_start_line=start_line,
                 global_stop_line=stop_line,
@@ -809,7 +763,7 @@ def prepare_dce_segments(
     if all_eta.size > 1 and np.any(np.diff(all_eta) <= 0):
         raise ValueError("Concatenated segment azimuth times are not strictly increasing.")
 
-    return PreparedSegmentScene(
+    return PreparedScene(
         alignments=alignments,
         common_slant_range_times_s=common_tau,
         azimuth_times_s=all_eta,
@@ -834,7 +788,7 @@ def _lanczos_fractional_weights(frac: float, radius: int) -> tuple[np.ndarray, n
 
 
 def _align_segment_rows(
-    alignment: SegmentAlignment,
+    alignment: Alignment,
     local_start: int,
     local_stop: int,
     n_common: int,
@@ -883,8 +837,8 @@ def _align_segment_rows(
 
 
 def _stream_accc_from_segments(
-    prepared: PreparedSegmentScene,
-    block: AzimuthDCEBlock,
+    prepared: PreparedScene,
+    block: AzimuthBlock,
     *,
     batch_lines: int = 256,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
@@ -973,7 +927,7 @@ def _fine_dce_from_accumulators(
     c_range: np.ndarray,
     p0_range: np.ndarray,
     p1_range: np.ndarray,
-    range_blocks: Sequence[RangeDCEBlock],
+    range_blocks: Sequence[RangeBlock],
     prf_hz: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert streaming ACCC accumulators to range-block fine DCE estimates."""
@@ -1002,7 +956,7 @@ def _fine_dce_from_accumulators(
 # DAD §5.3 -- Robust fine-DCE unwrapping
 # ---------------------------------------------------------------------------
 
-def unwrap_fine_dce_dad(
+def unwrap_fine_dc(
     range_times_s: ArrayLike,
     fine_hz: ArrayLike,
     prf_hz: float,
@@ -1089,7 +1043,7 @@ def unwrap_fine_dce_dad(
 # DAD §5.5 -- Polynomial fitting and RMS quality
 # ---------------------------------------------------------------------------
 
-def robust_polynomial_fit(
+def fit_polynomial(
     range_times_s: ArrayLike,
     values_hz: ArrayLike,
     *,
@@ -1159,7 +1113,7 @@ def robust_polynomial_fit(
 # DAD §5.4 -- Absolute ambiguity resolution
 # ---------------------------------------------------------------------------
 
-def resolve_absolute_dce_with_geometry(
+def resolve_absolute_dc(
     range_times_s: ArrayLike,
     fine_unwrapped_hz: ArrayLike,
     geometry_hz: ArrayLike,
@@ -1205,7 +1159,7 @@ def resolve_absolute_dce_with_geometry(
     ambiguity_number = int(np.rint(geom[0] / prf_hz))
     absolute_data = fine + ambiguity_number * prf_hz
 
-    geom_coeff, _, _ = robust_polynomial_fit(
+    geom_coeff, _, _ = fit_polynomial(
         tau,
         geom,
         t0_s=t0_s,
@@ -1217,7 +1171,7 @@ def resolve_absolute_dce_with_geometry(
     geometry_fitted = np.polynomial.polynomial.polyval(tau - t0_s, geom_coeff)
     delta = absolute_data - geometry_fitted
 
-    delta_coeff, valid_mask, _ = robust_polynomial_fit(
+    delta_coeff, valid_mask, _ = fit_polynomial(
         tau,
         delta,
         t0_s=t0_s,
@@ -1283,7 +1237,7 @@ class Estimator:
         product_start_time_s: Optional[float] = None,
         product_stop_time_s: Optional[float] = None,
         zero_dop_minus_acq_time_s: Optional[float] = None,
-    ) -> tuple[list[AzimuthDCEBlock], list[RangeDCEBlock]]:
+    ) -> tuple[list[AzimuthBlock], list[RangeBlock]]:
         """Build and inspect DCE block layout without estimating DC."""
         az_blocks = build_azimuth_blocks(
             n_lines=n_azimuth_lines,
@@ -1310,12 +1264,12 @@ class Estimator:
     def estimate_block(
         self,
         range_compressed_block: np.ndarray,
-        azimuth_block: AzimuthDCEBlock,
-        range_blocks: Sequence[RangeDCEBlock],
+        azimuth_block: AzimuthBlock,
+        range_blocks: Sequence[RangeBlock],
         *,
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
-    ) -> DCERecord:
+    ) -> Estimate:
         """Estimate one DCE record from one range-compressed azimuth block."""
         s = np.asarray(range_compressed_block)
 
@@ -1328,7 +1282,7 @@ class Estimator:
                 f"Expected {azimuth_block.num_lines} azimuth lines, got {s.shape[0]}."
             )
 
-        fine, accc, coherence = fine_dce_cdce(
+        fine, accc, coherence = estimate_fine_dc(
             s,
             range_blocks,
             self.prf_hz,
@@ -1345,7 +1299,7 @@ class Estimator:
             else None
         )
 
-        fine_unwrapped = unwrap_fine_dce_dad(
+        fine_unwrapped = unwrap_fine_dc(
             range_times,
             fine,
             self.prf_hz,
@@ -1386,7 +1340,7 @@ class Estimator:
                 ambiguity_number,
                 valid_mask,
                 rms,
-            ) = resolve_absolute_dce_with_geometry(
+            ) = resolve_absolute_dc(
                 range_times,
                 fine_unwrapped,
                 geometry,
@@ -1404,7 +1358,7 @@ class Estimator:
             # absolute PRF ambiguity cannot be guaranteed.
             absolute = fine_unwrapped.copy()
 
-            data_poly, valid_mask, rms = robust_polynomial_fit(
+            data_poly, valid_mask, rms = fit_polynomial(
                 range_times,
                 absolute,
                 t0_s=t0,
@@ -1413,7 +1367,7 @@ class Estimator:
                 max_iterations=self.config.max_fit_iterations,
             )
 
-        return DCERecord(
+        return Estimate(
             block=azimuth_block,
             t0_s=t0,
             range_blocks=list(range_blocks),
@@ -1446,7 +1400,7 @@ class Estimator:
         product_start_time_s: Optional[float] = None,
         product_stop_time_s: Optional[float] = None,
         zero_dop_minus_acq_time_s: Optional[float] = None,
-    ) -> list[DCERecord]:
+    ) -> list[Estimate]:
         """Estimate DCE records for a complete internal signal-data extent.
 
         Parameters
@@ -1502,7 +1456,7 @@ class Estimator:
             zero_dop_minus_acq_time_s=zero_dop_minus_acq_time_s,
         )
 
-        records: list[DCERecord] = []
+        records: list[Estimate] = []
 
         for block in az_blocks:
             data = s[block.start_line:block.stop_line, :]
@@ -1525,9 +1479,9 @@ class Estimator:
         *,
         lanczos_radius: int = 8,
         azimuth_gap_tolerance_s: Optional[float] = None,
-    ) -> PreparedSegmentScene:
+    ) -> PreparedScene:
         """Prepare multiple acquisition chunks with different SWST/range grids."""
-        return prepare_dce_segments(
+        return prepare_segments(
             segments,
             self.prf_hz,
             lanczos_radius=lanczos_radius,
@@ -1551,7 +1505,7 @@ class Estimator:
         azimuth_gap_tolerance_s: Optional[float] = None,
         batch_lines: int = 256,
         return_prepared_scene: bool = False,
-    ) -> list[DCERecord] | tuple[list[DCERecord], PreparedSegmentScene]:
+    ) -> list[Estimate] | tuple[list[Estimate], PreparedScene]:
         """Estimate DCE over multiple acquisition segments/chunks.
 
         Unlike :meth:`estimate_scene`, the input chunks do not need the same
@@ -1592,7 +1546,7 @@ class Estimator:
             dtype=np.float64,
         )
 
-        records: list[DCERecord] = []
+        records: list[Estimate] = []
 
         for block in az_blocks:
             c_range, p0_range, p1_range, _ = _stream_accc_from_segments(
@@ -1613,7 +1567,7 @@ class Estimator:
                 if self.config.unwrap_weighting == "coherence"
                 else None
             )
-            fine_unwrapped = unwrap_fine_dce_dad(
+            fine_unwrapped = unwrap_fine_dc(
                 range_times,
                 fine,
                 self.prf_hz,
@@ -1643,7 +1597,7 @@ class Estimator:
                     ambiguity_number,
                     valid_mask,
                     rms,
-                ) = resolve_absolute_dce_with_geometry(
+                ) = resolve_absolute_dc(
                     range_times,
                     fine_unwrapped,
                     geometry,
@@ -1656,7 +1610,7 @@ class Estimator:
                 ambiguity_resolved = True
             else:
                 absolute = fine_unwrapped.copy()
-                data_poly, valid_mask, rms = robust_polynomial_fit(
+                data_poly, valid_mask, rms = fit_polynomial(
                     range_times,
                     absolute,
                     t0_s=t0,
@@ -1666,7 +1620,7 @@ class Estimator:
                 )
 
             records.append(
-                DCERecord(
+                Estimate(
                     block=block,
                     t0_s=t0,
                     range_blocks=list(rg_blocks),
@@ -1691,21 +1645,16 @@ class Estimator:
 
     @staticmethod
     def evaluate_records(
-        records: Sequence[DCERecord],
+        records: Sequence[Estimate],
         *,
         azimuth_time_s: float,
         slant_range_times_s: ArrayLike,
         interpolation: Literal["linear", "nearest"] = "linear",
     ) -> np.ndarray:
-        """Evaluate DCE at an arbitrary azimuth time and range vector.
+        """Evaluate Doppler centroid at an azimuth time and range vector.
 
-        The DAD produces one polynomial per DCE azimuth block. This helper
-        provides a convenient notebook interface between those records.
-
-        [Inference]
-        Linear interpolation between neighboring DCE records is a research
-        convenience and is NOT claimed here as an explicitly published DAD
-        requirement.
+        Linear interpolation between records is an implementation choice; the
+        DAD defines one polynomial per Doppler centroid azimuth block.
         """
         if not records:
             raise ValueError("records must not be empty.")
@@ -1743,7 +1692,7 @@ class Estimator:
 
     @staticmethod
     def evaluate_at_line(
-        records: Sequence[DCERecord],
+        records: Sequence[Estimate],
         *,
         line_index: int,
         azimuth_times_s: ArrayLike,
@@ -1782,7 +1731,7 @@ def utc_iso_to_gps_seconds(text: str, gps_utc_offset_s: float = 18.0) -> float:
     return float(utc_s + gps_utc_offset_s)
 
 
-def prepare_annotation_records(
+def parse_annotation_records(
     records: Sequence[dict], gps_utc_offset_s: float = 18.0
 ) -> list[dict]:
     """Normalize L1 annotation DCE dictionaries for numerical evaluation."""
@@ -1805,7 +1754,7 @@ def prepare_annotation_records(
     return sorted(prepared, key=lambda item: item["azimuth_s"])
 
 
-def evaluate_annotation_dce(
+def evaluate_annotation_records(
     records: Sequence[dict],
     azimuth_time_s: float,
     slant_range_times_s: ArrayLike,
@@ -1833,9 +1782,9 @@ def evaluate_annotation_dce(
     return (1.0 - alpha) * evaluate(records[lo]) + alpha * evaluate(records[hi])
 
 
-def compare_annotation_dce(
+def compare_with_annotations(
     annotation_records: Sequence[dict],
-    estimated_records: Sequence[DCERecord],
+    estimated_records: Sequence[Estimate],
     slant_range_times_s: ArrayLike,
     *,
     prf_hz: Optional[float] = None,
@@ -1853,7 +1802,7 @@ def compare_annotation_dce(
                 record.block.azimuth_time_s - annotation["azimuth_s"]
             ),
         )
-        reference_hz = evaluate_annotation_dce(
+        reference_hz = evaluate_annotation_records(
             [annotation], annotation["azimuth_s"], tau
         )
         estimated_hz = estimated.evaluate(tau)
@@ -1893,8 +1842,8 @@ def compare_annotation_dce(
 
     return comparisons
 
-def records_summary(records: Sequence[DCERecord]) -> list[dict]:
-    """Return a notebook-friendly list of dictionaries."""
+def summarize_estimates(records: Sequence[Estimate]) -> list[dict]:
+    """Return one summary dictionary per estimate."""
     out: list[dict] = []
 
     for i, r in enumerate(records):
@@ -1973,7 +1922,7 @@ def _self_test() -> None:
     )
 
     rg_blocks = build_range_blocks(n_rg, tau, cfg)
-    fine, _, _ = fine_dce_cdce(s, rg_blocks, prf)
+    fine, _, _ = estimate_fine_dc(s, rg_blocks, prf)
 
     expected = np.array(
         [np.mean(true_f[b.start_sample:b.stop_sample]) for b in rg_blocks]
@@ -2057,22 +2006,6 @@ def _self_test() -> None:
     )
     if pair_count != n1 + n2 - 2:
         raise RuntimeError("Azimuth-gap self-test failed.")
-
-
-Alignment = SegmentAlignment
-PreparedScene = PreparedSegmentScene
-AzimuthBlock = AzimuthDCEBlock
-RangeBlock = RangeDCEBlock
-Estimate = DCERecord
-estimate_fine_dc = fine_dce_cdce
-prepare_segments = prepare_dce_segments
-unwrap_fine_dc = unwrap_fine_dce_dad
-fit_polynomial = robust_polynomial_fit
-resolve_absolute_dc = resolve_absolute_dce_with_geometry
-parse_annotation_records = prepare_annotation_records
-evaluate_annotation_records = evaluate_annotation_dce
-compare_with_annotations = compare_annotation_dce
-summarize_estimates = records_summary
 
 
 __all__ = [
