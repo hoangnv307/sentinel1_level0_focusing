@@ -5,14 +5,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from .azimuth_compression import (
-    azimuth_fm_rate_magnitude,
-    compress_azimuth_block,
+    compress as compress_azimuth,
+    fm_rate_magnitude,
 )
-from .rcmc import build_sinc_table
+from .rcmc import build_interpolation_table
 
 
 @dataclass(frozen=True)
-class SlcLayout:
+class Layout:
     matched_filter_support_samples: int
     overlap_samples: int
     step_samples: int
@@ -20,11 +20,11 @@ class SlcLayout:
     support_probe_samples: tuple[int, ...]
 
 
-def estimate_slc_layout(
+def estimate_layout(
     num_azimuth_lines,
     slant_ranges_m,
     packet_azimuth_times_s,
-    dce_for_line,
+    doppler_centroid_for_line,
     velocity_estimator,
     *,
     wavelength_m,
@@ -40,7 +40,7 @@ def estimate_slc_layout(
     supports = []
 
     for index in probes:
-        fdc_hz = dce_for_line(index)
+        fdc_hz = doppler_centroid_for_line(index)
         velocity_mps = velocity_estimator.evaluate_block(
             block_center_time_s=packet_azimuth_times_s[index],
             slant_range_m=slant_ranges_m,
@@ -49,7 +49,7 @@ def estimate_slc_layout(
             n_control_points=9,
             range_polynomial_degree=2,
         )
-        far_rate = azimuth_fm_rate_magnitude(
+        far_rate = fm_rate_magnitude(
             slant_ranges_m[-1], velocity_mps[-1], fdc_hz[-1], wavelength_m
         )
         if not np.isfinite(far_rate) or far_rate <= 0.0:
@@ -63,7 +63,7 @@ def estimate_slc_layout(
     if overlap >= fft_length:
         raise ValueError("Azimuth overlap must be smaller than fft_length.")
 
-    return SlcLayout(
+    return Layout(
         matched_filter_support_samples=support,
         overlap_samples=overlap,
         step_samples=fft_length - overlap,
@@ -72,11 +72,11 @@ def estimate_slc_layout(
     )
 
 
-def assemble_slc(
+def assemble(
     range_compressed,
     slant_ranges_m,
     packet_azimuth_times_s,
-    dce_for_line,
+    doppler_centroid_for_line,
     velocity_estimator,
     layout,
     *,
@@ -95,7 +95,7 @@ def assemble_slc(
     focused_image = np.zeros_like(range_compressed, dtype=np.complex64)
     left_throw = layout.overlap_samples // 2
     right_throw = layout.overlap_samples - left_throw
-    sinc_table = build_sinc_table(rcmc_kernel_length, rcmc_phases)
+    sinc_table = build_interpolation_table(rcmc_kernel_length, rcmc_phases)
 
     for start in range(0, range_compressed.shape[0], layout.step_samples):
         real_length = min(fft_length, range_compressed.shape[0] - start)
@@ -104,7 +104,7 @@ def assemble_slc(
         )
         block[:real_length] = range_compressed[start:start + real_length]
         center = start + (real_length - 1) // 2
-        fdc_hz = dce_for_line(center)
+        fdc_hz = doppler_centroid_for_line(center)
         velocity_mps = velocity_estimator.evaluate_block(
             block_center_time_s=packet_azimuth_times_s[center],
             slant_range_m=slant_ranges_m,
@@ -113,7 +113,7 @@ def assemble_slc(
             n_control_points=9,
             range_polynomial_degree=2,
         )
-        focused_block = compress_azimuth_block(
+        focused_block = compress_azimuth(
             block,
             fdc_hz,
             velocity_mps,
@@ -136,3 +136,10 @@ def assemble_slc(
             break
 
     return focused_image
+
+
+SlcLayout = Layout
+estimate_slc_layout = estimate_layout
+assemble_slc = assemble
+
+__all__ = ["Layout", "estimate_layout", "assemble"]

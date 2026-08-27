@@ -4,24 +4,18 @@ from unittest.mock import patch
 import numpy as np
 from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
-from sentinel1_processing.azimuth_compression import compress_azimuth_block
-from sentinel1_processing.dce import (
-    AzimuthDCEBlock,
-    DCERecord,
-    compare_annotation_dce,
-    evaluate_annotation_dce,
-    prepare_annotation_records,
-    resolve_absolute_dce_with_geometry,
-)
-from sentinel1_processing.range_compression import compress_range, estimate_iq_bias
-from sentinel1_processing.rcmc import build_sinc_table
+import sentinel1_processing.azimuth_compression as azimuth_compression
+import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
+import sentinel1_processing.range_compression as range_compression
+import sentinel1_processing.raw_data_correction as raw_data_correction
+import sentinel1_processing.rcmc as rcmc
 
 
 class ProcessingTest(unittest.TestCase):
     def test_range_compression_matches_linear_convolution(self):
         data = np.arange(16, dtype=np.float32)[None, :].astype(np.complex64)
         times = np.arange(data.shape[1], dtype=np.float64)
-        result, result_times = compress_range(
+        result, result_times = range_compression.compress(
             data,
             times,
             sample_rate_hz=4.0,
@@ -40,7 +34,7 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[1:-2])
 
-        same_result, same_times = compress_range(
+        same_result, same_times = range_compression.compress(
             data,
             times,
             sample_rate_hz=4.0,
@@ -55,10 +49,10 @@ class ProcessingTest(unittest.TestCase):
 
         biased = data + (2.0 - 3.0j)
         self.assertAlmostEqual(
-            estimate_iq_bias(np.full((2, 3), 2.0 - 3.0j)),
+            raw_data_correction.estimate_iq_bias(np.full((2, 3), 2.0 - 3.0j)),
             2.0 - 3.0j,
         )
-        corrected, _ = compress_range(
+        corrected, _ = range_compression.compress(
             biased,
             times,
             sample_rate_hz=4.0,
@@ -72,7 +66,7 @@ class ProcessingTest(unittest.TestCase):
 
     def test_absolute_dce_uses_first_geometry_range_block(self):
         absolute, coefficients, _, ambiguity, _, _ = (
-            resolve_absolute_dce_with_geometry(
+            doppler_centroid_estimation.resolve_absolute_dc(
                 [0.0, 1.0, 2.0],
                 [200.0, 210.0, 220.0],
                 [1200.0, 100.0, 110.0],
@@ -107,10 +101,18 @@ class ProcessingTest(unittest.TestCase):
 
         identity = lambda data, *args, **kwargs: data
         with (
-            patch("sentinel1_processing.azimuth_compression.apply_src", identity),
-            patch("sentinel1_processing.azimuth_compression.apply_rcmc", identity),
+            patch(
+                "sentinel1_processing.azimuth_compression."
+                "apply_secondary_range_compression",
+                identity,
+            ),
+            patch(
+                "sentinel1_processing.azimuth_compression."
+                "correct_range_cell_migration",
+                identity,
+            ),
         ):
-            focused = compress_azimuth_block(
+            focused = azimuth_compression.compress(
                 block,
                 centroid_hz,
                 velocity_mps,
@@ -126,7 +128,7 @@ class ProcessingTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(focused[1:, 0])), 1e-5)
 
     def test_dce_interpolation_and_sinc_normalization(self):
-        records = prepare_annotation_records([
+        records = doppler_centroid_estimation.parse_annotation_records([
             {"azimuthTime": "2025-01-01T00:00:00", "t0": 0.0,
              "dataDcPolynomial": [1.0, 2.0]},
             {"azimuthTime": "2025-01-01T00:00:02", "t0": 0.0,
@@ -134,14 +136,18 @@ class ProcessingTest(unittest.TestCase):
         ])
         middle = (records[0]["azimuth_s"] + records[1]["azimuth_s"]) / 2.0
         np.testing.assert_allclose(
-            evaluate_annotation_dce(records, middle, [0.0, 1.0]),
+            doppler_centroid_estimation.evaluate_annotation_records(
+                records, middle, [0.0, 1.0]
+            ),
             [2.0, 5.0],
         )
-        _, table = build_sinc_table()
+        _, table = rcmc.build_interpolation_table()
         np.testing.assert_allclose(table.sum(axis=1), 1.0)
 
-        estimate = DCERecord(
-            block=AzimuthDCEBlock(0, 2, 1.0, middle, middle, middle),
+        estimate = doppler_centroid_estimation.Estimate(
+            block=doppler_centroid_estimation.AzimuthBlock(
+                0, 2, 1.0, middle, middle, middle
+            ),
             t0_s=0.0,
             range_blocks=[],
             fine_baseband_hz=np.array([0.0]),
@@ -151,7 +157,7 @@ class ProcessingTest(unittest.TestCase):
             coherence=np.array([0.75]),
             rms_error_hz=0.5,
         )
-        comparison = compare_annotation_dce(
+        comparison = doppler_centroid_estimation.compare_with_annotations(
             [records[0]], [estimate], [0.0, 1.0], prf_hz=1000.0
         )[0]
         self.assertAlmostEqual(comparison["rmse_hz"], np.sqrt(2.5))

@@ -4,7 +4,7 @@ import numpy as np
 from scipy.fft import fft, ifft, fftfreq
 
 
-def apply_src(
+def apply(
     range_doppler,
     azimuth_baseband_hz,
     doppler_centroid_hz,
@@ -68,3 +68,8 @@ def apply_src(
         )[:, :segment_length]
 
     return range_doppler
+
+
+apply_src = apply
+
+__all__ = ["apply"]

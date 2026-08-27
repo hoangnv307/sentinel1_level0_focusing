@@ -3,7 +3,7 @@
 import numpy as np
 
 
-def build_sinc_table(length=16, phases=64):
+def build_interpolation_table(length=16, phases=64):
     """Build the windowed-sinc fractional-delay lookup table."""
     left = length // 2 - 1
     offsets = np.arange(-left, length - left)
@@ -17,7 +17,7 @@ def build_sinc_table(length=16, phases=64):
     return offsets, table
 
 
-def apply_rcmc(
+def correct(
     range_doppler,
     azimuth_baseband_hz,
     doppler_centroid_hz,
@@ -30,7 +30,7 @@ def apply_rcmc(
     sinc_table=None,
 ):
     """Correct range migration using a quantized windowed-sinc kernel."""
-    offsets, table = sinc_table or build_sinc_table()
+    offsets, table = sinc_table or build_interpolation_table()
     phases = table.shape[0]
     n_azimuth, n_range = range_doppler.shape
     corrected = np.zeros_like(range_doppler)
@@ -73,3 +73,9 @@ def apply_rcmc(
         )
 
     return corrected
+
+
+build_sinc_table = build_interpolation_table
+apply_rcmc = correct
+
+__all__ = ["build_interpolation_table", "correct"]

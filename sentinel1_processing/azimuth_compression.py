@@ -3,11 +3,11 @@
 import numpy as np
 from scipy.fft import fft, ifft, fftfreq, fftshift, ifftshift
 
-from .rcmc import apply_rcmc
-from .src import apply_src
+from .rcmc import correct as correct_range_cell_migration
+from .src import apply as apply_secondary_range_compression
 
 
-def azimuth_fm_rate_magnitude(range_m, velocity_mps, fdc_hz, wavelength_m):
+def fm_rate_magnitude(range_m, velocity_mps, fdc_hz, wavelength_m):
     """Magnitude of Sentinel-1 L1 DAD Eq. 9-22."""
     d = np.sqrt(np.maximum(
         1.0 - (wavelength_m * fdc_hz / (2.0 * velocity_mps)) ** 2,
@@ -16,7 +16,7 @@ def azimuth_fm_rate_magnitude(range_m, velocity_mps, fdc_hz, wavelength_m):
     return 2.0 * velocity_mps**2 * d**3 / (wavelength_m * range_m)
 
 
-def compress_azimuth_block(
+def compress(
     block,
     doppler_centroid_hz,
     effective_velocity_mps,
@@ -37,7 +37,7 @@ def compress_azimuth_block(
     )
     range_doppler = fftshift(fft(block, axis=0), axes=0).astype(np.complex64)
 
-    apply_src(
+    apply_secondary_range_compression(
         range_doppler,
         azimuth_baseband_hz,
         doppler_centroid_hz,
@@ -48,7 +48,7 @@ def compress_azimuth_block(
         slant_ranges_m=slant_ranges_m,
         segment_samples=src_segment_samples,
     )
-    corrected = apply_rcmc(
+    corrected = correct_range_cell_migration(
         range_doppler,
         azimuth_baseband_hz,
         doppler_centroid_hz,
@@ -83,3 +83,9 @@ def compress_azimuth_block(
         )
 
     return ifft(ifftshift(corrected, axes=0), axis=0).astype(np.complex64)
+
+
+azimuth_fm_rate_magnitude = fm_rate_magnitude
+compress_azimuth_block = compress
+
+__all__ = ["fm_rate_magnitude", "compress"]

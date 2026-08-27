@@ -15,17 +15,9 @@ import numpy as np
 import pandas as pd
 import sentinel1decoder
 
-from sentinel1_processing.dce import (
-    DCESegment,
-    Sentinel1DCE,
-    prepare_annotation_records,
-    robust_polynomial_fit,
-    unwrap_fine_dce_dad,
-    build_range_blocks,
-    _fine_dce_from_accumulators,
-    _stream_accc_from_segments,
-)
-from sentinel1_processing.range_compression import compress_range, estimate_iq_bias
+import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
+import sentinel1_processing.range_compression as range_compression
+import sentinel1_processing.raw_data_correction as raw_data_correction
 
 
 DATA_FILE = Path(
@@ -37,7 +29,7 @@ OUTPUT_DIR = Path("test/dce_diagnostics_output")
 ZERO_DOPPLER_OFFSET_S = 0.386295160
 T0_S = 6.095910535477454e-3
 
-ANNOTATION_RECORDS = prepare_annotation_records([
+ANNOTATION_RECORDS = doppler_centroid_estimation.parse_annotation_records([
     {"azimuthTime": "2025-12-26T21:43:59.100490", "t0": T0_S,
      "dataDcPolynomial": [4.152910e1, 1.012491e5, -4.252661e8]},
     {"azimuthTime": "2025-12-26T21:44:14.095877", "t0": T0_S,
@@ -98,8 +90,8 @@ def _estimate_records(output_support, correct_iq_bias=True):
     }
 
     raw13 = np.load(CHUNK13_NPY, mmap_mode="r")
-    iq_bias13 = estimate_iq_bias(raw13) if correct_iq_bias else 0.0j
-    compressed13, range_times13 = compress_range(
+    iq_bias13 = raw_data_correction.estimate_iq_bias(raw13) if correct_iq_bias else 0.0j
+    compressed13, range_times13 = range_compression.compress(
         raw13,
         _range_times(metadata13, raw13.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
@@ -109,8 +101,8 @@ def _estimate_records(output_support, correct_iq_bias=True):
     del raw13
 
     raw14 = level0.get_acquisition_chunk_data(14)
-    iq_bias14 = estimate_iq_bias(raw14) if correct_iq_bias else 0.0j
-    compressed14, range_times14 = compress_range(
+    iq_bias14 = raw_data_correction.estimate_iq_bias(raw14) if correct_iq_bias else 0.0j
+    compressed14, range_times14 = range_compression.compress(
         raw14,
         _range_times(metadata14, raw14.shape[1], sample_rate_hz, suppressed_time_s),
         **compression,
@@ -122,12 +114,16 @@ def _estimate_records(output_support, correct_iq_bias=True):
 
     azimuth13 = _packet_times(metadata13)
     azimuth14 = _packet_times(metadata14)
-    estimator = Sentinel1DCE.for_s6_research(prf_hz=1.0 / pri_s)
+    estimator = doppler_centroid_estimation.Estimator.for_s6_research(prf_hz=1.0 / pri_s)
     scene_stop_s = azimuth14[-1] + pri_s
     records, scene = estimator.estimate_segments(
         [
-            DCESegment(compressed13, range_times13, azimuth13, "chunk13"),
-            DCESegment(compressed14, range_times14, azimuth14, "chunk14"),
+            doppler_centroid_estimation.Segment(
+                compressed13, range_times13, azimuth13, "chunk13"
+            ),
+            doppler_centroid_estimation.Segment(
+                compressed14, range_times14, azimuth14, "chunk14"
+            ),
         ],
         t0_s=T0_S,
         slice_start_times_s=[azimuth13[0]],
@@ -139,7 +135,7 @@ def _estimate_records(output_support, correct_iq_bias=True):
     )
     alignment = scene.alignment_summary()
     accumulators = [
-        _stream_accc_from_segments(scene, record.block)[:3]
+        doppler_centroid_estimation._stream_accc_from_segments(scene, record.block)[:3]
         for record in records
     ]
     config = estimator.config
@@ -166,18 +162,20 @@ def _sweep_range_layouts(accumulators, range_times, prf_hz, config):
             range_block_size_samples=block_size,
             outlier_sigma=3.0,
         )
-        blocks = build_range_blocks(range_times.size, range_times, layout_config)
+        blocks = doppler_centroid_estimation.build_range_blocks(
+            range_times.size, range_times, layout_config
+        )
         block_times = np.array([block.center_slant_range_time_s for block in blocks])
         for record_index, ((c_range, p0_range, p1_range), annotation) in enumerate(
             zip(accumulators, ANNOTATION_RECORDS), start=1
         ):
-            fine, _, coherence = _fine_dce_from_accumulators(
+            fine, _, coherence = doppler_centroid_estimation._fine_dce_from_accumulators(
                 c_range, p0_range, p1_range, blocks, prf_hz
             )
-            unwrapped = unwrap_fine_dce_dad(
+            unwrapped = doppler_centroid_estimation.unwrap_fine_dc(
                 block_times, fine, prf_hz, fft_length=config.unwrap_fft_length
             )
-            coefficients, used, fit_rms_hz = robust_polynomial_fit(
+            coefficients, used, fit_rms_hz = doppler_centroid_estimation.fit_polynomial(
                 block_times,
                 unwrapped,
                 t0_s=T0_S,
@@ -208,7 +206,7 @@ def _sweep_range_layouts(accumulators, range_times, prf_hz, config):
 
 
 def _refit(record, sigma, min_coherence, weighted_unwrap, prf_hz):
-    fine = unwrap_fine_dce_dad(
+    fine = doppler_centroid_estimation.unwrap_fine_dc(
         record.range_times_s,
         record.fine_baseband_hz,
         prf_hz,
@@ -222,7 +220,7 @@ def _refit(record, sigma, min_coherence, weighted_unwrap, prf_hz):
     if indices.size < 3:
         raise RuntimeError("Coherence filter left fewer than three fine estimates.")
 
-    coefficients, local_mask, fit_rms_hz = robust_polynomial_fit(
+    coefficients, local_mask, fit_rms_hz = doppler_centroid_estimation.fit_polynomial(
         record.range_times_s[indices],
         fine[indices],
         t0_s=T0_S,

@@ -3,16 +3,10 @@
 import numpy as np
 from scipy.fft import fft, ifft
 
-
-def estimate_iq_bias(radar_data):
-    """Estimate the constant I/Q mean used by the DAD bias correction."""
-    data = np.asarray(radar_data)
-    if data.ndim != 2 or data.size == 0:
-        raise ValueError("radar_data must be a non-empty 2-D array.")
-    return complex(np.mean(data, dtype=np.complex128))
+from .raw_data_correction import estimate_iq_bias  # Backward compatibility.
 
 
-def compress_range(
+def compress(
     radar_data,
     raw_slant_range_times_s,
     *,
@@ -69,3 +63,8 @@ def compress_range(
         compressed[a0:a1] = filtered[:, output_slice]
 
     return compressed, output_times
+
+
+compress_range = compress
+
+__all__ = ["compress"]

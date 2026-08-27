@@ -36,7 +36,7 @@ WGS84_B_M = 6356752.314245
 
 
 @dataclass
-class VrControlPoint:
+class ControlPoint:
     """Diagnostic result for one range control point."""
     range_m: float
     fdc_hz: float
@@ -48,16 +48,16 @@ class VrControlPoint:
 
 
 @dataclass
-class VrBlockResult:
+class BlockResult:
     """Result of one azimuth processing block."""
     vr_mps: np.ndarray
     control_ranges_m: np.ndarray
     control_vr_mps: np.ndarray
     polynomial_coefficients: np.ndarray
-    control_points: list[VrControlPoint]
+    control_points: list[ControlPoint]
 
 
-class PreciseEffectiveVelocity:
+class Estimator:
     """
     Estimate V_r(R, eta) block-by-block from actual orbit geometry.
 
@@ -101,7 +101,7 @@ class PreciseEffectiveVelocity:
         )
 
     @classmethod
-    def from_sentinel1_ephemeris(
+    def from_ephemeris(
         cls,
         ephemeris,
         wavelength_m,
@@ -139,6 +139,13 @@ class PreciseEffectiveVelocity:
             ellipsoid_a_m=ellipsoid_a_m,
             ellipsoid_b_m=ellipsoid_b_m,
         )
+
+    from_sentinel1_ephemeris = from_ephemeris
+
+    @classmethod
+    def from_level0_product(cls, level0_product, wavelength_m):
+        """Build the DAD Section 9.10 estimator from a decoded L0 product."""
+        return cls.from_ephemeris(level0_product.ephemeris, wavelength_m)
 
     def position(self, time_s):
         """Interpolated ECEF spacecraft position [m]."""
@@ -424,11 +431,11 @@ class PreciseEffectiveVelocity:
 
         return_diagnostics : bool
             False -> return only V_r vector.
-            True  -> return VrBlockResult.
+            True  -> return BlockResult.
 
         Returns
         -------
-        ndarray or VrBlockResult
+        ndarray or BlockResult
             V_r(R) [m/s], same length as slant_range_m.
         """
         ranges = np.asarray(slant_range_m, dtype=np.float64)
@@ -487,7 +494,7 @@ class PreciseEffectiveVelocity:
             control_vr[k] = vr
 
             diagnostics.append(
-                VrControlPoint(
+                ControlPoint(
                     range_m=R,
                     fdc_hz=fd,
                     vr_mps=vr,
@@ -528,7 +535,7 @@ class PreciseEffectiveVelocity:
 
         # Coefficients are for normalized range:
         # x = (R-r_ref)/r_scale.
-        result = VrBlockResult(
+        result = BlockResult(
             vr_mps=vr_all,
             control_ranges_m=control_ranges,
             control_vr_mps=control_vr,
@@ -540,20 +547,9 @@ class PreciseEffectiveVelocity:
         return result
 
 
-def make_estimator_from_notebook(l0file, wavelength_m):
-    """
-    Convenience wrapper for the current notebook.
+PreciseEffectiveVelocity = Estimator
+VrControlPoint = ControlPoint
+VrBlockResult = BlockResult
+make_estimator_from_notebook = Estimator.from_level0_product
 
-    Example
-    -------
-    from sentinel1_processing.effective_velocity import make_estimator_from_notebook
-
-    vr_estimator = make_estimator_from_notebook(
-        l0file,
-        wavelength_m
-    )
-    """
-    return PreciseEffectiveVelocity.from_sentinel1_ephemeris(
-        l0file.ephemeris,
-        wavelength_m,
-    )
+__all__ = ["Estimator", "ControlPoint", "BlockResult"]
