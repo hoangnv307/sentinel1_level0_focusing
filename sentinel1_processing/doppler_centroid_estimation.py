@@ -70,9 +70,9 @@ class Config:
     outlier_sigma: float = 3.5
     max_fit_iterations: int = 5
 
-    # Optional weighting in the DAD robust unwrap. Uniform is closest to the
-    # published unweighted expression. "coherence" is a research extension.
-    unwrap_weighting: Literal["uniform", "coherence"] = "uniform"
+    # DAD §5.3 Eq. (5-23): noisy estimates are weighted down during unwrap.
+    # Normalized lag-one coherence supplies the unpublished quality weights.
+    unwrap_weighting: Literal["uniform", "coherence"] = "coherence"
 
     @classmethod
     def for_stripmap_s6(cls) -> "Config":
@@ -91,6 +91,7 @@ class Config:
             polynomial_degree=2,
             rms_threshold_hz=20.0,
             outlier_sigma=3.0,
+            unwrap_weighting="coherence",
         )
 
 @dataclass(frozen=True)
@@ -596,7 +597,7 @@ def _range_block_coherence(
     start: int,
     stop: int,
 ) -> float:
-    """Normalized lag-one coherence for diagnostics / optional weighting."""
+    """Normalized lag-one coherence used as the DAD §5.3 quality weight."""
     x = s[:-1, start:stop]
     y = s[1:, start:stop]
 
@@ -625,8 +626,8 @@ def estimate_fine_dc(
     accc_blocks:
         Complex ACCC averaged over each range block.
     coherence:
-        Normalized lag-one coherence. This is provided as a diagnostic; it is
-        not claimed to be the operational IPF quality metric.
+        Normalized lag-one coherence used as a DAD §5.3 quality weight. The
+        DAD does not publish the operational IPF quality-weight formula.
     """
     if prf_hz <= 0:
         raise ValueError("prf_hz must be positive.")
@@ -1051,13 +1052,14 @@ def fit_polynomial(
     degree: int = 2,
     outlier_sigma: float = 3.5,
     max_iterations: int = 5,
+    weights: Optional[ArrayLike] = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Least-squares polynomial fit with iterative outlier rejection.
+    """Quality-weighted least-squares fit with iterative outlier rejection.
 
     DAD §5.5 / §5.5.1 requires LS polynomial fitting, outlier elimination and
-    an RMS residual quality indicator. The exact operational outlier rejection
-    rule is not published in the DAD, therefore the MAD-based rejection below
-    is a transparent research implementation.
+    an RMS residual quality indicator. Positive ``weights`` scale each point's
+    least-squares influence; zero-quality points are excluded. The exact
+    operational rule is not published, so outliers use iterative MAD clipping.
 
     Coefficients are returned in ASCENDING order [c0, c1, c2, ...].
     """
@@ -1067,9 +1069,18 @@ def fit_polynomial(
     if tau.shape != y.shape or tau.ndim != 1:
         raise ValueError("range_times_s and values_hz must be 1-D and equal length.")
 
-    finite = np.isfinite(tau) & np.isfinite(y)
+    if weights is None:
+        quality = np.ones_like(y)
+    else:
+        quality = np.asarray(weights, dtype=np.float64)
+        if quality.shape != y.shape:
+            raise ValueError("weights must have the same shape as values_hz.")
+        quality = np.maximum(quality, 0.0)
+
+    finite = np.isfinite(tau) & np.isfinite(y) & np.isfinite(quality)
+    finite &= quality > 0.0
     if np.count_nonzero(finite) < degree + 1:
-        raise ValueError("Not enough finite points for polynomial fit.")
+        raise ValueError("Not enough positive-quality points for polynomial fit.")
 
     x = tau - float(t0_s)
     mask = finite.copy()
@@ -1078,7 +1089,9 @@ def fit_polynomial(
         if np.count_nonzero(mask) < degree + 1:
             break
 
-        coeff = np.polynomial.polynomial.polyfit(x[mask], y[mask], degree)
+        coeff = np.polynomial.polynomial.polyfit(
+            x[mask], y[mask], degree, w=np.sqrt(quality[mask])
+        )
         fit = np.polynomial.polynomial.polyval(x, coeff)
         residual = y - fit
 
@@ -1100,7 +1113,9 @@ def fit_polynomial(
 
         mask = new_mask
 
-    coeff = np.polynomial.polynomial.polyfit(x[mask], y[mask], degree)
+    coeff = np.polynomial.polynomial.polyfit(
+        x[mask], y[mask], degree, w=np.sqrt(quality[mask])
+    )
     fit = np.polynomial.polynomial.polyval(x, coeff)
     residual = y - fit
 
@@ -1123,6 +1138,7 @@ def resolve_absolute_dc(
     degree: int = 2,
     outlier_sigma: float = 3.5,
     max_fit_iterations: int = 5,
+    weights: Optional[ArrayLike] = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1178,6 +1194,7 @@ def resolve_absolute_dc(
         degree=degree,
         outlier_sigma=outlier_sigma,
         max_iterations=max_fit_iterations,
+        weights=weights,
     )
 
     data_coeff = geom_coeff + delta_coeff
@@ -1293,7 +1310,7 @@ class Estimator:
             dtype=np.float64,
         )
 
-        unwrap_weights = (
+        quality_weights = (
             coherence
             if self.config.unwrap_weighting == "coherence"
             else None
@@ -1304,7 +1321,7 @@ class Estimator:
             fine,
             self.prf_hz,
             fft_length=self.config.unwrap_fft_length,
-            weights=unwrap_weights,
+            weights=quality_weights,
         )
 
         if t0_s is None:
@@ -1349,6 +1366,7 @@ class Estimator:
                 degree=self.config.polynomial_degree,
                 outlier_sigma=self.config.outlier_sigma,
                 max_fit_iterations=self.config.max_fit_iterations,
+                weights=quality_weights,
             )
 
             ambiguity_resolved = True
@@ -1365,6 +1383,7 @@ class Estimator:
                 degree=self.config.polynomial_degree,
                 outlier_sigma=self.config.outlier_sigma,
                 max_iterations=self.config.max_fit_iterations,
+                weights=quality_weights,
             )
 
         return Estimate(
@@ -1562,7 +1581,7 @@ class Estimator:
                 self.prf_hz,
             )
 
-            unwrap_weights = (
+            quality_weights = (
                 coherence
                 if self.config.unwrap_weighting == "coherence"
                 else None
@@ -1572,7 +1591,7 @@ class Estimator:
                 fine,
                 self.prf_hz,
                 fft_length=self.config.unwrap_fft_length,
-                weights=unwrap_weights,
+                weights=quality_weights,
             )
 
             t0 = float(range_times[0]) if t0_s is None else float(t0_s)
@@ -1606,6 +1625,7 @@ class Estimator:
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_fit_iterations=self.config.max_fit_iterations,
+                    weights=quality_weights,
                 )
                 ambiguity_resolved = True
             else:
@@ -1617,6 +1637,7 @@ class Estimator:
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_iterations=self.config.max_fit_iterations,
+                    weights=quality_weights,
                 )
 
             records.append(
@@ -1741,6 +1762,10 @@ def parse_annotation_records(
         item["dataDcPolynomial"] = np.asarray(
             item["dataDcPolynomial"], dtype=np.float64
         )
+        if "geometryDcPolynomial" in item:
+            item["geometryDcPolynomial"] = np.asarray(
+                item["geometryDcPolynomial"], dtype=np.float64
+            )
         item["azimuth_s"] = utc_iso_to_gps_seconds(
             item["azimuthTime"], gps_utc_offset_s
         )
@@ -1806,6 +1831,17 @@ def compare_with_annotations(
             [annotation], annotation["azimuth_s"], tau
         )
         estimated_hz = estimated.evaluate(tau)
+        geometry_hz = None
+        if estimated.geometry_dc_polynomial is not None:
+            geometry_hz = np.polynomial.polynomial.polyval(
+                tau - estimated.t0_s,
+                estimated.geometry_dc_polynomial,
+            )
+        elif "geometryDcPolynomial" in annotation:
+            geometry_hz = np.polynomial.polynomial.polyval(
+                tau - annotation["t0"],
+                annotation["geometryDcPolynomial"],
+            )
         error_hz = estimated_hz - reference_hz
 
         ambiguity_hz = 0.0
@@ -1820,6 +1856,10 @@ def compare_with_annotations(
             "range_times_s": tau,
             "annotation_hz": reference_hz,
             "estimated_hz": estimated_hz,
+            "geometry_hz": geometry_hz,
+            "fit_range_times_s": estimated.range_times_s.copy(),
+            "fit_points_hz": estimated.fine_absolute_hz.copy(),
+            "fit_valid_mask": estimated.valid_mask.copy(),
             "annotation_coefficients": np.asarray(
                 annotation["dataDcPolynomial"], dtype=np.float64
             ),

@@ -1,17 +1,79 @@
 import unittest
+from types import SimpleNamespace
 
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
 import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
 import sentinel1_processing.azimuth_processing as azimuth_processing
+import sentinel1_processing.dce_plotting as dce_plotting
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
 
 
 class ProcessingTest(unittest.TestCase):
+    def test_dce_fit_ignores_zero_quality_points(self):
+        coefficients, valid, _ = doppler_centroid_estimation.fit_polynomial(
+            np.arange(5.0),
+            np.array([0.0, 1.0, 100.0, 3.0, 4.0]),
+            t0_s=0.0,
+            degree=1,
+            outlier_sigma=1e9,
+            weights=np.array([1.0, 1.0, 0.0, 1.0, 1.0]),
+        )
+
+        np.testing.assert_allclose(coefficients, [0.0, 1.0], atol=1e-12)
+        np.testing.assert_array_equal(valid, [True, True, False, True, True])
+
+    def test_dce_plotting_splits_records_and_marks_rejected_points(self):
+        records = [
+            {
+                "record": index,
+                "range_times_s": np.array([0.001, 0.002]),
+                "annotation_hz": np.array([10.0, 11.0]),
+                "estimated_hz": np.array([10.1, 10.9]),
+                "geometry_hz": np.array([9.5, 9.7]),
+                "fit_range_times_s": np.array([0.001, 0.002]),
+                "fit_points_hz": np.array([10.2, 15.0]),
+                "fit_valid_mask": np.array([True, False]),
+                "rmse_hz": 0.1,
+                "fit_rms_hz": 0.2,
+            }
+            for index in range(1, 4)
+        ]
+
+        figures = dce_plotting.plot_comparisons(records)
+        try:
+            self.assertEqual(len(figures), 3)
+            for figure in figures:
+                self.assertEqual(len(figure.axes), 1)
+                self.assertEqual(len(figure.axes[0].lines), 3)
+                self.assertEqual(len(figure.axes[0].collections), 2)
+        finally:
+            for figure in figures:
+                plt.close(figure)
+
+        velocity_figure = dce_plotting.plot_effective_velocity(
+            np.array([800_000.0, 900_000.0]),
+            SimpleNamespace(
+                vr_mps=np.array([7200.0, 7210.0]),
+                control_ranges_m=np.array([800_000.0, 900_000.0]),
+                control_vr_mps=np.array([7201.0, 7209.0]),
+            ),
+        )
+        try:
+            self.assertEqual(len(velocity_figure.axes[0].lines), 1)
+            self.assertEqual(len(velocity_figure.axes[0].collections), 1)
+        finally:
+            plt.close(velocity_figure)
+
     def test_public_api_follows_dad_processing_steps(self):
+        self.assertEqual(
+            doppler_centroid_estimation.Config.for_stripmap_s6().unwrap_weighting,
+            "coherence",
+        )
         self.assertEqual(
             azimuth_pre_processing.__all__,
             ["azimuth_zero_padding", "range", "azimuth_forward_fft"],
@@ -192,6 +254,7 @@ class ProcessingTest(unittest.TestCase):
             fine_unwrapped_hz=np.array([0.0]),
             fine_absolute_hz=np.array([0.0]),
             data_dc_polynomial=np.array([2.0, 3.0]),
+            geometry_dc_polynomial=np.array([1.0, 1.0]),
             coherence=np.array([0.75]),
             rms_error_hz=0.5,
         )
@@ -199,6 +262,7 @@ class ProcessingTest(unittest.TestCase):
             [records[0]], [estimate], [0.0, 1.0], prf_hz=1000.0
         )[0]
         self.assertAlmostEqual(comparison["rmse_hz"], np.sqrt(2.5))
+        np.testing.assert_allclose(comparison["geometry_hz"], [1.0, 2.0])
 
 
 if __name__ == "__main__":
