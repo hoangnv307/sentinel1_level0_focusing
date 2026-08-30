@@ -7,7 +7,7 @@ name = "sentinel1-level0-decoder-demo"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "joblib",
+    "marimo",
     "matplotlib",
     "numpy",
     "pandas",
@@ -20,3 +20,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.marimo.runtime]
+auto_instantiate = true
+auto_reload = "lazy"
+on_cell_change = "lazy"
+watcher_on_save = "lazy"

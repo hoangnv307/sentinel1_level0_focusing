@@ -1,76 +1,67 @@
-# Sentinel 1 Level 0 Decoding Demo
+# Sentinel-1 Level-0 Decoding Demo
 
-Phát triển từ repo của tác giả [Rich-Hall](https://github.com/Rich-Hall/sentinel1decoder/tree/main/sentinel1decoder) 
+Pipeline xử lý Sentinel-1 Level-0 thành ảnh SLC, phát triển từ dự án của
+[Rich Hall](https://github.com/Rich-Hall/sentinel1decoder).
+
+## Cài đặt
 
 ```bash
 pip install -r requirements-lock.txt
 pip install -e . --no-deps
 ```
 
-## Bộ nhớ đệm của notebook
+## Mở notebook
 
-Notebook dùng `joblib.Memory` để lưu kết quả các bước tốn thời gian vào `.cache/sentinel1/`.
+Notebook dùng **marimo** và được lưu dưới dạng file Python:
 
-Các bước được lưu:
-
-- Giải mã dữ liệu I/Q của chunk 13 và chunk 14.
-- Ước lượng độ lệch I/Q của hai chunk.
-- Nén cự ly của chunk 13 và chunk 14.
-- Ước lượng Doppler centroid.
-- Tạo ảnh SLC hội tụ.
-
-Effective velocity, block layout, bảng thống kê và biểu đồ vẫn được tính hoặc vẽ lại vì nhẹ hơn các bước trên.
-
-### Cấu hình
-
-```python
-CACHE_POLICY = "reuse"
-CACHE_TAG = "default"
-PIPELINE_VERSION = 1
+```bash
+marimo edit sentinel1_level_1_decoder.py
 ```
 
-### Các chế độ sử dụng
+Marimo tự chạy cell theo quan hệ phụ thuộc và lưu các kết quả tốn thời gian
+vào `.cache/sentinel1/`. Không cần cấu hình phiên bản hoặc policy cache thủ
+công.
 
-| Trường hợp | Cấu hình | Kết quả |
-|---|---|---|
-| Làm việc hằng ngày | `CACHE_POLICY = "reuse"` | Dùng cache nếu có; nếu thiếu thì tính và lưu. |
-| Muốn tính lại tất cả checkpoint | `CACHE_POLICY = "refresh"` | Luôn tính lại và cập nhật cache của tag hiện tại. |
-| Chỉ cho phép dùng dữ liệu đã có | `CACHE_POLICY = "readonly"` | Đọc cache; dừng ngay nếu checkpoint bị thiếu. |
-| Chạy thử mà không dùng cache | `CACHE_POLICY = "off"` | Không đọc và không ghi cache; dữ liệu cũ được giữ nguyên. |
+Các kết quả được lưu gồm:
 
-### Khi chạy toàn bộ notebook
+- Decode dữ liệu I/Q của chunk 13 và 14.
+- I/Q bias của từng chunk.
+- Range-compressed data của từng chunk.
+- Doppler centroid estimation.
+- Focused SLC.
 
-Lần chạy đầu tiên với `reuse`, các checkpoint chưa tồn tại sẽ được tính và lưu. Những lần sau với cùng file đầu vào, tham số và phiên bản pipeline:
+## Các trường hợp sử dụng
 
-- Decode chunk 13/14: đọc từ cache.
-- I/Q bias chunk 13/14: đọc từ cache.
-- Range compression chunk 13/14: đọc từ cache.
-- Doppler Estimation: đọc từ cache.
-- Focus SLC: đọc từ cache.
-- Effective velocity, block layout và biểu đồ: vẫn chạy lại.
-
-Các ma trận NumPy lớn được đọc bằng memory-map ở chế độ chỉ đọc, giúp tránh nạp thêm một bản sao đầy đủ vào RAM.
-
-### Khi thay đổi tham số hoặc code
-
-| Thay đổi | Việc cần làm |
+| Thao tác | Điều xảy ra |
 |---|---|
-| Đổi file đầu vào, chunk hoặc tham số xử lý | Không cần thao tác; Joblib tạo cache key mới. |
-| Sửa code có thể ảnh hưởng kết quả | Tăng `PIPELINE_VERSION` để invalid cả stage đó và các stage phía sau. |
-| Đổi hằng số toàn cục, AUX data hoặc dependency gián tiếp | Tăng `PIPELINE_VERSION`. |
-| Muốn thử nghiệm mà không ảnh hưởng cache mặc định | Đổi `CACHE_TAG`, ví dụ `"rcmc_test"`. |
-| Sửa trực tiếp nội dung một mảng trung gian | Đổi `CACHE_TAG` và dùng `refresh`. |
+| Mở lại notebook, không đổi gì | Các bước nặng được đọc từ ổ đĩa; bảng và biểu đồ vẫn có thể được dựng lại. |
+| Sửa cell DCE | DCE được tính và lưu lại. Focus chỉ tính lại nếu dữ liệu DCE thay đổi. Decode và Range Compression dùng dữ liệu đã lưu. |
+| Sửa source DCE trong `src/sentinel1_processing/doppler_centroid_estimation.py` | Tương tự sửa cell DCE. Marimo tự reload module và chạy lại phần phụ thuộc. |
+| Sửa Range Compression | Range Compression được tính lại. DCE và Focus chỉ tính lại nếu dữ liệu đầu vào của chúng thay đổi. Decode vẫn dùng dữ liệu đã lưu. |
+| Sửa Focus | Chỉ Focus chạy lại. |
+| Đổi tham số hoặc file đầu vào | Cell dùng giá trị đó và các cell phía sau chạy lại; các cell phía trước không liên quan được giữ nguyên. |
+| Chỉ sửa cell `print`, bảng hoặc biểu đồ | Chỉ phần hiển thị liên quan chạy lại; dữ liệu xử lý không được tính lại. |
 
-Joblib tự phát hiện thay đổi trực tiếp trong hàm được cache, nhưng `PIPELINE_VERSION` vẫn cần thiết để invalid các stage phía sau và những dependency nằm ngoài thân hàm.
+Khi một cache mới thay thế cache cũ của cùng công đoạn, notebook tự xóa bản
+cũ sau khi Focus hoàn tất để thư mục cache không tăng mãi.
 
-### Dọn cache
+## Quy tắc khi sửa notebook
 
-Xóa cache của `CACHE_TAG` hiện tại trong notebook:
+Tách tính toán và hiển thị thành hai cell:
 
 ```python
-checkpoints.memory.clear(warn=False)
+# Cell tính toán
+doppler_centroid_estimates = estimator.estimate_segments(...)
 ```
 
-Cache dùng pickle cho một số object Python. Chỉ sử dụng cache do chính dự án tạo ra.
+```python
+# Cell hiển thị
+print(doppler_centroid_estimates)
+```
 
-Cache được tạo bởi cơ chế cũ không được Joblib sử dụng lại. Sau khi chạy thành công một lần với Joblib, có thể xóa các thư mục cache cũ `raw_decoding`, `range_compression` và `focus_slc` để giải phóng dung lượng.
+Nếu đặt `print()` hoặc vẽ biểu đồ bên trong block `mo.persistent_cache`, phần
+hiển thị sẽ bị bỏ qua khi cache được dùng. Vì vậy các block cache chỉ chứa
+tính toán tạo dữ liệu.
+
+Cache dùng pickle; chỉ mở cache do chính dự án tạo ra. Muốn tính lại toàn bộ,
+xóa thư mục `.cache/sentinel1/` rồi mở lại notebook.
