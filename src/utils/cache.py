@@ -2,6 +2,23 @@
 
 from pathlib import Path
 
+import numpy as np
+
+
+def save_array(path: str | Path, array: np.ndarray) -> None:
+    """Atomically save a large array without putting it in marimo's pickle."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(f"{destination.suffix}.tmp")
+    with temporary.open("wb") as stream:
+        np.save(stream, array, allow_pickle=False)
+    temporary.replace(destination)
+
+
+def open_array(path: str | Path) -> np.memmap:
+    """Open a cached array without eagerly loading it into RAM."""
+    return np.load(path, mmap_mode="r", allow_pickle=False)
+
 
 def prune_old_entries(cache_root: str | Path) -> int:
     """Keep only the newest persistent value for each named cache block."""

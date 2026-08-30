@@ -64,6 +64,7 @@ def _():
 
     notebook_started_at = perf_counter()
     pd.set_option("display.max_columns", None)
+    plt.style.use("default")
     return (
         PROJECT_ROOT,
         Path,
@@ -174,9 +175,9 @@ def _(np):
 
 @app.cell
 def _():
-    from utils.cache import prune_old_entries
+    from utils.cache import open_array, prune_old_entries, save_array
 
-    return (prune_old_entries,)
+    return open_array, prune_old_entries, save_array
 
 
 @app.cell(hide_code=True)
@@ -288,6 +289,7 @@ def _(
     input_identity,
     l0file,
     mo,
+    open_array,
     process_chunk,
     range_reference_function,
     range_sample_freq,
@@ -295,20 +297,11 @@ def _(
     raw_correction_source,
     raw_data_correction,
     raw_slant_range_time_vec_s_1,
+    save_array,
     selected_chunk,
 ):
-    with mo.persistent_cache(
-        name=f"range-compression-{selected_chunk}",
-        save_path=CACHE_ROOT,
-        pin_modules=True,
-    ):
-        input_identity, range_source, raw_correction_source
-        (
-            range_compressed,
-            slant_range_time_vec_s,
-            iq_bias_components,
-            radar_data_preview,
-        ) = process_chunk(
+    def _process_to_file(path):
+        compressed, range_times, bias, preview = process_chunk(
             l0file,
             selected_chunk,
             raw_slant_range_time_vec_s_1,
@@ -320,9 +313,29 @@ def _(
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
         )
+        save_array(path, compressed)
+        return range_times, bias, preview
+
+    with mo.persistent_cache(
+        name=f"range-compression-{selected_chunk}",
+        save_path=CACHE_ROOT,
+        pin_modules=True,
+    ):
+        input_identity, range_source, raw_correction_source
+        # ponytail: fixed data path assumes the cache directory is deleted as a unit.
+        range_cache_file = (
+            f"{CACHE_ROOT}/range-compression-{selected_chunk}/data.npy"
+        )
+        (
+            slant_range_time_vec_s,
+            iq_bias_components,
+            radar_data_preview,
+        ) = _process_to_file(range_cache_file)
+    range_compressed = open_array(range_cache_file)
     return (
         iq_bias_components,
         radar_data_preview,
+        range_cache_file,
         range_compressed,
         slant_range_time_vec_s,
     )
@@ -840,10 +853,11 @@ def _(
     input_identity,
     l0file,
     mo,
+    open_array,
     packet_azimuth_times_14,
     packet_azimuth_times_s,
     process_chunk,
-    range_compressed,
+    range_cache_file,
     range_reference_function,
     range_sample_freq,
     range_source,
@@ -855,6 +869,7 @@ def _(
     slant_range_time_vec_s,
 ):
     def _estimate():
+        range_compressed = open_array(range_cache_file)
         range_compressed_14, slant_range_time_14, _, _ = process_chunk(
             l0file,
             doppler_centroid_chunk,
@@ -1307,24 +1322,22 @@ def _(
     doppler_centroid_for_block,
     effective_velocity_estimator,
     effective_velocity_source,
+    input_identity,
     mo,
+    open_array,
     packet_azimuth_times_s,
-    range_compressed,
+    range_cache_file,
     range_sample_freq,
     range_sample_period,
+    range_source,
+    raw_correction_source,
+    save_array,
     slant_range_vec_m,
     wavelength_m,
 ):
-    with mo.persistent_cache(
-        name="focused-slc", save_path=CACHE_ROOT, pin_modules=True
-    ):
-        (
-            azimuth_source,
-            doppler_centroid_estimates,
-            effective_velocity_source,
-        )
-        focused_image = azimuth_processing.processing_blocks.focus_slc(
-            range_compressed,
+    def _focus_to_file(path):
+        focused = azimuth_processing.processing_blocks.focus_slc(
+            open_array(range_cache_file),
             slant_range_vec_m,
             packet_azimuth_times_s,
             doppler_centroid_for_block,
@@ -1342,6 +1355,24 @@ def _(
             rcmc_kernel_length=RCMC_KERNEL_LENGTH,
             rcmc_phases=RCMC_NUM_PHASES,
         )
+        save_array(path, focused)
+
+    with mo.persistent_cache(
+        name="focused-slc", save_path=CACHE_ROOT, pin_modules=True
+    ):
+        (
+            azimuth_source,
+            doppler_centroid_estimates,
+            effective_velocity_source,
+            input_identity,
+            range_source,
+            raw_correction_source,
+        )
+        focused_cache_file = (
+            f"{CACHE_ROOT}/focused-slc/data.npy"
+        )
+        _focus_to_file(focused_cache_file)
+    focused_image = open_array(focused_cache_file)
     return (focused_image,)
 
 
@@ -1409,20 +1440,20 @@ def _(mo):
 
 
 @app.cell
-def _(colors, display_amplitude_scale, focused_image, np, plt):
-    plt.figure(figsize=(12, 12))
-    plt.title("Sentinel-1 Processed SAR Image")
-    plt.imshow(
-        np.abs(focused_image[::20, ::20]),
-        origin="lower",
-        norm=colors.LogNorm(
-            vmin=300 / display_amplitude_scale,
-            vmax=10000 / display_amplitude_scale,
-        ),
-    )
-    plt.xlabel("Down Range (samples)")
-    plt.ylabel("Cross Range (samples)")
-    plt.show()
+def _():
+    # plt.figure(figsize=(12, 12))
+    # plt.title("Sentinel-1 Processed SAR Image")
+    # plt.imshow(
+    #     np.abs(focused_image[::20, ::20]),
+    #     origin="lower",
+    #     norm=colors.LogNorm(
+    #         vmin=300 / display_amplitude_scale,
+    #         vmax=10000 / display_amplitude_scale,
+    #     ),
+    # )
+    # plt.xlabel("Down Range (samples)")
+    # plt.ylabel("Cross Range (samples)")
+    # plt.show()
     return
 
 
@@ -1447,8 +1478,8 @@ def _(
     plt.title("Sentinel-1 Processed SAR Image - detail")
     plt.imshow(
         np.abs(focused_image[
-            9000:11000,
-            6000 - valid_range_start:8000 - valid_range_start,
+            10000:11000,
+            6500 - valid_range_start:8000 - valid_range_start,
         ]),
         origin="lower",
         norm=colors.LogNorm(

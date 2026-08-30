@@ -3,10 +3,23 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from utils.cache import prune_old_entries
+import numpy as np
+
+from utils.cache import open_array, prune_old_entries, save_array
 
 
 class CacheTest(unittest.TestCase):
+    def test_large_array_cache_is_memory_mapped(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "array.npy"
+            expected = np.arange(12, dtype=np.complex64).reshape(3, 4)
+
+            save_array(path, expected)
+            actual = open_array(path)
+
+            self.assertIsInstance(actual, np.memmap)
+            np.testing.assert_array_equal(actual, expected)
+
     def test_prune_old_entries_keeps_newest(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
