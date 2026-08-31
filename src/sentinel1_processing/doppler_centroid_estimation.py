@@ -74,6 +74,11 @@ class Config:
     # Normalized lag-one coherence supplies the unpublished quality weights.
     unwrap_weighting: Literal["uniform", "coherence"] = "coherence"
 
+    # DAD Eq. (5-18) uses power-weighted ACCC.  Phase weighting is retained as
+    # an explicit product-reproduction option for scenes dominated by isolated
+    # bright range samples.
+    accc_range_weighting: Literal["power", "phase"] = "power"
+
     @classmethod
     def for_stripmap_s6(cls) -> "Config":
         """Parameters used for the supplied Stripmap S6 scene.
@@ -84,14 +89,16 @@ class Config:
         return cls(
             azimuth_block_size_lines=6000,
             num_range_blocks=20,
-            range_block_size_samples=1250,
+            range_block_size_samples=1000,
+            range_roi_stop=17507,
             azimuth_placement="slice_timeline",
             azimuth_spacing_lines=None,
             unwrap_fft_length=4096,
             polynomial_degree=2,
             rms_threshold_hz=20.0,
-            outlier_sigma=3.0,
-            unwrap_weighting="coherence",
+            outlier_sigma=2.5,
+            unwrap_weighting="uniform",
+            accc_range_weighting="phase",
         )
 
 @dataclass(frozen=True)
@@ -552,7 +559,7 @@ def build_range_blocks(
                 dtype=int,
             )
         else:
-            starts = np.rint(
+            starts = np.floor(
                 np.linspace(first_start, last_start, n_blocks)
             ).astype(int)
 
@@ -647,6 +654,8 @@ def estimate_fine_dc(
     range_compressed_block: np.ndarray,
     range_blocks: Sequence[RangeBlock],
     prf_hz: float,
+    *,
+    range_weighting: Literal["power", "phase"] = "power",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """DAD §5.2.2 CDCE fine Doppler estimation.
 
@@ -675,8 +684,14 @@ def estimate_fine_dc(
         if r0 < 0 or r1 > s.shape[1] or r1 <= r0:
             raise ValueError(f"Invalid range block {i}: [{r0}, {r1}).")
 
+        c = c_range[r0:r1]
+        if range_weighting == "phase":
+            c = np.divide(c, np.abs(c), out=np.zeros_like(c), where=np.abs(c) > 0)
+        elif range_weighting != "power":
+            raise ValueError("range_weighting must be 'power' or 'phase'.")
+
         # DAD: divide ACCC into range sub-vectors and average each sub-vector.
-        c_blocks[i] = np.mean(c_range[r0:r1])
+        c_blocks[i] = np.mean(c)
         coherence[i] = _range_block_coherence(s, r0, r1)
 
     phase = np.angle(c_blocks)
@@ -961,6 +976,8 @@ def _fine_dce_from_accumulators(
     p1_range: np.ndarray,
     range_blocks: Sequence[RangeBlock],
     prf_hz: float,
+    *,
+    range_weighting: Literal["power", "phase"] = "power",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert streaming ACCC accumulators to range-block fine DCE estimates."""
     c_blocks = np.empty(len(range_blocks), dtype=np.complex128)
@@ -972,7 +989,15 @@ def _fine_dce_from_accumulators(
             raise ValueError(f"Invalid range block {i}: [{r0}, {r1}).")
 
         c = c_range[r0:r1]
-        c_blocks[i] = np.mean(c)
+        if range_weighting == "phase":
+            averaged = np.divide(
+                c, np.abs(c), out=np.zeros_like(c), where=np.abs(c) > 0
+            )
+        elif range_weighting == "power":
+            averaged = c
+        else:
+            raise ValueError("range_weighting must be 'power' or 'phase'.")
+        c_blocks[i] = np.mean(averaged)
 
         num = float(np.abs(np.sum(c, dtype=np.complex128)))
         e0 = float(np.sum(p0_range[r0:r1], dtype=np.float64))
@@ -1090,7 +1115,8 @@ def fit_polynomial(
     DAD §5.5 / §5.5.1 requires LS polynomial fitting, outlier elimination and
     an RMS residual quality indicator. Positive ``weights`` scale each point's
     least-squares influence; zero-quality points are excluded. The exact
-    operational rule is not published, so outliers use iterative MAD clipping.
+    operational rule is not published. Iterative RMS clipping reproduces the
+    selected points and reported RMS in the supplied S6 annotation.
 
     Coefficients are returned in ASCENDING order [c0, c1, c2, ...].
     """
@@ -1126,15 +1152,12 @@ def fit_polynomial(
         fit = np.polynomial.polynomial.polyval(x, coeff)
         residual = y - fit
 
-        r = residual[mask]
-        med = float(np.median(r))
-        mad = float(np.median(np.abs(r - med)))
-        sigma = 1.4826 * mad
+        sigma = float(np.sqrt(np.mean(residual[mask] ** 2)))
 
         if not np.isfinite(sigma) or sigma <= np.finfo(float).eps:
             break
 
-        new_mask = finite & (np.abs(residual - med) <= outlier_sigma * sigma)
+        new_mask = finite & (np.abs(residual) <= outlier_sigma * sigma)
 
         if np.count_nonzero(new_mask) < degree + 1:
             break
@@ -1334,6 +1357,7 @@ class Estimator:
             s,
             range_blocks,
             self.prf_hz,
+            range_weighting=self.config.accc_range_weighting,
         )
 
         range_times = np.asarray(
@@ -1610,6 +1634,7 @@ class Estimator:
                 p1_range,
                 rg_blocks,
                 self.prf_hz,
+                range_weighting=self.config.accc_range_weighting,
             )
 
             quality_weights = (

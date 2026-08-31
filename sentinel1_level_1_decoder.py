@@ -152,6 +152,8 @@ def _(np):
         pulse_start_frequency_hz,
         pulse_ramp_rate_hz_per_s,
         pulse_length_s,
+        output="valid",
+        output_array=None,
     ):
         radar_data = l0file.get_acquisition_chunk_data(chunk)
         preview = np.abs(radar_data[::20, ::20])
@@ -165,6 +167,8 @@ def _(np):
             pulse_length_s=pulse_length_s,
             iq_bias=np.complex128(iq_bias),
             range_reference_function=range_reference_function,
+            output=output,
+            output_array=output_array,
         )
         return compressed, range_times, (
             float(iq_bias.real), float(iq_bias.imag)
@@ -693,36 +697,46 @@ def _(mo):
     mo.md(r"""
     ### 7.1 - Annotation records
 
-    These Level-1 annotation polynomials are validation references; they are not inputs to focusing.
+    Read the Level-1 annotation polynomials and Fine DC points used only as validation references; they are not inputs to focusing.
     """)
     return
 
 
 @app.cell
-def _(doppler_centroid_estimation):
-    DOPPLER_CENTROID_ANNOTATIONS = doppler_centroid_estimation.parse_annotation_records([
-        {
-            "azimuthTime": "2025-12-26T21:43:59.100490",
-            "t0": 6.095910535477454e-03,
-            "dataDcPolynomial": [4.152910e+01, 1.012491e+05, -4.252661e+08],
-            "fineStart": "2025-12-26T21:43:57.297041",
-            "fineStop": "2025-12-26T21:44:00.903940",
-        },
-        {
-            "azimuthTime": "2025-12-26T21:44:14.095877",
-            "t0": 6.095910535477454e-03,
-            "dataDcPolynomial": [1.141131e+01, 1.275731e+04, 6.579813e+07],
-            "fineStart": "2025-12-26T21:44:12.292428",
-            "fineStop": "2025-12-26T21:44:15.899327",
-        },
-        {
-            "azimuthTime": "2025-12-26T21:44:25.484967",
-            "t0": 6.095910535477454e-03,
-            "dataDcPolynomial": [3.263240e+01, -2.579159e+03, -1.314992e+08],
-            "fineStart": "2025-12-26T21:44:23.681518",
-            "fineStop": "2025-12-26T21:44:27.288417",
-        },
-    ])
+def _(PROJECT_ROOT, doppler_centroid_estimation, np):
+    from xml.etree import ElementTree
+
+    _annotation_root = ElementTree.parse(
+        PROJECT_ROOT / "references" /
+        "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
+    ).getroot()
+    _annotation_records = []
+    for _estimate in _annotation_root.findall(
+        "./dopplerCentroid/dcEstimateList/dcEstimate"
+    ):
+        _fine_dce = _estimate.findall("./fineDceList/fineDce")
+        _annotation_records.append({
+            "azimuthTime": _estimate.findtext("azimuthTime"),
+            "t0": float(_estimate.findtext("t0")),
+            "geometryDcPolynomial": np.fromstring(
+                _estimate.findtext("geometryDcPolynomial"), sep=" "
+            ),
+            "dataDcPolynomial": np.fromstring(
+                _estimate.findtext("dataDcPolynomial"), sep=" "
+            ),
+            "dataDcRmsError": float(_estimate.findtext("dataDcRmsError")),
+            "fineStart": _estimate.findtext("fineDceAzimuthStartTime"),
+            "fineStop": _estimate.findtext("fineDceAzimuthStopTime"),
+            "fineDceRangeTimes": np.array([
+                float(point.findtext("slantRangeTime")) for point in _fine_dce
+            ]),
+            "fineDceFrequencies": np.array([
+                float(point.findtext("frequency")) for point in _fine_dce
+            ]),
+        })
+    DOPPLER_CENTROID_ANNOTATIONS = (
+        doppler_centroid_estimation.parse_annotation_records(_annotation_records)
+    )
     return (DOPPLER_CENTROID_ANNOTATIONS,)
 
 
@@ -743,7 +757,6 @@ def _(DOPPLER_CENTROID_ANNOTATIONS, l0file, selected_chunk):
 
     doppler_centroid_chunk = selected_chunk + 1
     metadata_14 = l0file.get_acquisition_chunk_metadata(doppler_centroid_chunk)
-    data_14 = l0file.get_acquisition_chunk_data(doppler_centroid_chunk)
 
     return (
         DOPPLER_CENTROID_T0_S,
@@ -802,7 +815,11 @@ def _(mo):
     mo.md(r"""
     ### 7.4 - Doppler centroid estimation (DAD §§5.2–5.5)
 
-    Estimate fine Doppler, unwrap it, resolve PRF ambiguity when geometry Doppler is available, and fit the range polynomial.
+    Với sản phẩm S6 này, range-compression `valid` được gắn time axis tại
+    zero-lag của matched filter. Fine DC dùng trung bình pha ACCC để tránh một
+    vài range sample công suất lớn chi phối cả block. Polynomial dùng least
+    squares không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS; cấu hình
+    này tái tạo đúng valid mask và `dataDcRmsError` của ba record annotation.
     """)
     return
 
@@ -843,6 +860,7 @@ def _(mo):
 def _(
     CACHE_ROOT,
     DOPPLER_CENTROID_T0_S,
+    Path,
     TXPL,
     TXPRR,
     TXPSF,
@@ -855,27 +873,40 @@ def _(
     input_identity,
     l0file,
     mo,
+    np,
     open_array,
     packet_azimuth_times_14,
     packet_azimuth_times_s,
     process_chunk,
-    range_cache_file,
     range_reference_function,
     range_sample_freq,
     range_source,
     raw_correction_source,
     raw_data_correction,
     raw_slant_range_time_14,
+    raw_slant_range_time_vec_s_1,
     scene_start_acq_s,
     scene_stop_acq_s,
-    slant_range_time_vec_s,
+    selected_chunk,
 ):
-    def _estimate():
-        range_compressed = open_array(range_cache_file)
-        range_compressed_14, slant_range_time_14, _, _ = process_chunk(
+    def _process_dce_to_file(path, chunk, range_times, azimuth_times):
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(f"{destination.suffix}.tmp")
+        transmitted_pulse_samples = int(np.ceil(TXPL * range_sample_freq))
+        output = np.lib.format.open_memmap(
+            temporary,
+            mode="w+",
+            dtype=np.complex64,
+            shape=(
+                len(azimuth_times),
+                len(range_times) - transmitted_pulse_samples + 1,
+            ),
+        )
+        compressed, output_times, _, _ = process_chunk(
             l0file,
-            doppler_centroid_chunk,
-            raw_slant_range_time_14,
+            chunk,
+            range_times,
             raw_data_correction=raw_data_correction,
             azimuth_pre_processing=azimuth_pre_processing,
             range_reference_function=range_reference_function,
@@ -883,11 +914,38 @@ def _(
             pulse_start_frequency_hz=TXPSF,
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
+            output="valid",
+            output_array=output,
         )
+        compressed.flush()
+        temporary.replace(destination)
+        return output_times
+
+    def _estimate():
+        range_file_13 = (
+            f"{CACHE_ROOT}/dce-range-compression-{selected_chunk}/data.npy"
+        )
+        range_file_14 = (
+            f"{CACHE_ROOT}/dce-range-compression-{doppler_centroid_chunk}/data.npy"
+        )
+        slant_range_time_13 = _process_dce_to_file(
+            range_file_13,
+            selected_chunk,
+            raw_slant_range_time_vec_s_1,
+            packet_azimuth_times_s,
+        )
+        slant_range_time_14 = _process_dce_to_file(
+            range_file_14,
+            doppler_centroid_chunk,
+            raw_slant_range_time_14,
+            packet_azimuth_times_14,
+        )
+        range_compressed = open_array(range_file_13)
+        range_compressed_14 = open_array(range_file_14)
         segments = [
             doppler_centroid_estimation.Segment(
                 range_compressed,
-                slant_range_time_vec_s,
+                slant_range_time_13,
                 packet_azimuth_times_s,
                 name="chunk13",
             ),
@@ -1032,6 +1090,123 @@ def _(display, doppler_centroid_comparisons, pd):
     doppler_centroid_accuracy = pd.DataFrame(comparison_rows).set_index("record")
     display(doppler_centroid_accuracy)
     return (doppler_centroid_accuracy,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    #### So sánh từng điểm Fine DC với annotation
+
+    Ghép một-một các record theo azimuth time và các điểm theo slant-range time.
+    `valid_for_estimated_fit` là mask của phép fit tự tính; annotation không lưu
+    mask mà IPF đã dùng.
+    """)
+    return
+
+
+@app.cell
+def _(
+    DOPPLER_CENTROID_ANNOTATIONS,
+    display,
+    doppler_centroid_estimates,
+    np,
+    pd,
+):
+    fine_dc_rows = []
+    annotations_by_time = sorted(
+        DOPPLER_CENTROID_ANNOTATIONS, key=lambda item: item["azimuth_s"]
+    )
+    estimates_by_time = sorted(
+        doppler_centroid_estimates,
+        key=lambda item: item.block.azimuth_time_s,
+    )
+    if len(annotations_by_time) != len(estimates_by_time):
+        raise ValueError("Số record Fine DC của annotation và estimate phải bằng nhau.")
+
+    for record_index, (annotation, estimated) in enumerate(
+        zip(annotations_by_time, estimates_by_time), start=1
+    ):
+        annotation_times = annotation["fineDceRangeTimes"]
+        annotation_hz = annotation["fineDceFrequencies"]
+        estimated_times = estimated.range_times_s
+        estimated_hz = estimated.fine_baseband_hz
+        if not (
+            annotation_times.shape
+            == annotation_hz.shape
+            == estimated_times.shape
+            == estimated_hz.shape
+        ):
+            raise ValueError("Fine DC annotation và estimate phải có cùng số điểm.")
+
+        estimated_point_indices = np.array([
+            np.argmin(np.abs(estimated_times - annotation_time))
+            for annotation_time in annotation_times
+        ])
+        if np.unique(estimated_point_indices).size != annotation_times.size:
+            raise ValueError("Không thể ghép một-một các điểm Fine DC theo range-time.")
+
+        annotation_fit_hz = np.polynomial.polynomial.polyval(
+            annotation_times - annotation["t0"],
+            annotation["dataDcPolynomial"],
+        )
+        estimated_fit_hz = estimated.evaluate(annotation_times)
+        azimuth_time_error_ms = 1e3 * (
+            estimated.block.azimuth_time_s - annotation["azimuth_s"]
+        )
+
+        for annotation_point, estimated_point in enumerate(
+            estimated_point_indices
+        ):
+            fine_dc_rows.append({
+                "record": record_index,
+                "point": annotation_point + 1,
+                "azimuth_time_error_ms": azimuth_time_error_ms,
+                "annotation_range_time_us": annotation_times[annotation_point] * 1e6,
+                "estimated_range_time_us": estimated_times[estimated_point] * 1e6,
+                "range_time_error_us": (
+                    estimated_times[estimated_point]
+                    - annotation_times[annotation_point]
+                ) * 1e6,
+                "annotation_fine_dc_hz": annotation_hz[annotation_point],
+                "estimated_fine_dc_hz": estimated_hz[estimated_point],
+                "fine_dc_error_hz": (
+                    estimated_hz[estimated_point] - annotation_hz[annotation_point]
+                ),
+                "valid_for_estimated_fit": estimated.valid_mask[estimated_point],
+                "coherence": estimated.coherence[estimated_point],
+                "annotation_fit_hz": annotation_fit_hz[annotation_point],
+                "estimated_fit_hz": estimated_fit_hz[annotation_point],
+                "fit_curve_error_hz": (
+                    estimated_fit_hz[annotation_point]
+                    - annotation_fit_hz[annotation_point]
+                ),
+            })
+
+    fine_dc_point_comparison = pd.DataFrame(fine_dc_rows).set_index(
+        ["record", "point"]
+    )
+    fine_dc_summary_rows = []
+    for record_index, group in fine_dc_point_comparison.groupby(level="record"):
+        fine_error = group["fine_dc_error_hz"].to_numpy()
+        valid = group["valid_for_estimated_fit"].to_numpy(dtype=bool)
+        valid_error = fine_error[valid]
+        fit_error = group["fit_curve_error_hz"].to_numpy()
+        fine_dc_summary_rows.append({
+            "record": record_index,
+            "azimuth_time_error_ms": group["azimuth_time_error_ms"].iloc[0],
+            "max_abs_range_time_error_us": np.max(
+                np.abs(group["range_time_error_us"])
+            ),
+            "fine_all_bias_hz": fine_error.mean(),
+            "fine_all_rmse_hz": np.sqrt(np.mean(fine_error**2)),
+            "fine_valid_rmse_hz": np.sqrt(np.mean(valid_error**2)),
+            "fit_curve_rmse_hz": np.sqrt(np.mean(fit_error**2)),
+            "rejected_points": np.count_nonzero(~valid),
+        })
+    fine_dc_point_summary = pd.DataFrame(fine_dc_summary_rows).set_index("record")
+    display(fine_dc_point_summary)
+    display(fine_dc_point_comparison)
+    return fine_dc_point_comparison, fine_dc_point_summary
 
 
 @app.cell(hide_code=True)

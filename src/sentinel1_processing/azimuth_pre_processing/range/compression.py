@@ -46,11 +46,11 @@ def extract_valid_samples(
     n_range = raw_times.size
     same_start = (transmitted_pulse_samples - 1) // 2
     if output == "valid":
-        valid_stop = n_range - (
-            transmitted_pulse_samples - 1 - same_start
-        )
         data_slice = slice(transmitted_pulse_samples - 1, n_range)
-        return filtered_lines[:, data_slice], raw_times[same_start:valid_stop]
+        # The matched-filter peak for zero delay is at M - 1.  Removing that
+        # implementation delay must not also shift the physical range axis.
+        output_length = n_range - transmitted_pulse_samples + 1
+        return filtered_lines[:, data_slice], raw_times[:output_length]
     if output == "same":
         data_slice = slice(same_start, same_start + n_range)
         return filtered_lines[:, data_slice], raw_times

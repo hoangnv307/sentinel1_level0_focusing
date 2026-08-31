@@ -1,6 +1,8 @@
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,6 +95,63 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_allclose(coefficients, [0.0, 1.0], atol=1e-12)
         np.testing.assert_array_equal(valid, [True, True, False, True, True])
 
+    def test_s6_annotation_fit_reproduces_ipf_valid_points(self):
+        root = ElementTree.parse(
+            Path(__file__).parents[1]
+            / "references"
+            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
+        ).getroot()
+        records = root.findall("./dopplerCentroid/dcEstimateList/dcEstimate")
+
+        for record_index, (record, rejected) in enumerate(
+            zip(records, ((), (), (0,))), start=1
+        ):
+            points = record.findall("./fineDceList/fineDce")
+            times = np.array([
+                float(point.findtext("slantRangeTime")) for point in points
+            ])
+            frequencies = np.array([
+                float(point.findtext("frequency")) for point in points
+            ])
+            coefficients, valid, rms = doppler_centroid_estimation.fit_polynomial(
+                times,
+                frequencies,
+                t0_s=float(record.findtext("t0")),
+                degree=2,
+                outlier_sigma=2.5,
+            )
+            expected_valid = np.ones(len(points), dtype=bool)
+            expected_valid[list(rejected)] = False
+
+            with self.subTest(record=record_index):
+                np.testing.assert_array_equal(valid, expected_valid)
+                np.testing.assert_allclose(
+                    coefficients,
+                    np.fromstring(record.findtext("dataDcPolynomial"), sep=" "),
+                    rtol=1e-5,
+                )
+                self.assertAlmostEqual(
+                    rms, float(record.findtext("dataDcRmsError")), places=5
+                )
+
+    def test_s6_range_blocks_match_annotation_layout(self):
+        config = doppler_centroid_estimation.Config.for_stripmap_s6()
+        blocks = doppler_centroid_estimation.build_range_blocks(
+            17553,
+            np.arange(17553, dtype=float),
+            config,
+        )
+
+        self.assertEqual(
+            [block.start_sample for block in blocks],
+            [
+                0, 868, 1737, 2606, 3475, 4343, 5212, 6081, 6950, 7819,
+                8687, 9556, 10425, 11294, 12163, 13031, 13900, 14769,
+                15638, 16507,
+            ],
+        )
+        self.assertEqual(blocks[-1].stop_sample, 17507)
+
     def test_dce_plotting_splits_records_and_marks_rejected_points(self):
         records = [
             {
@@ -138,7 +197,11 @@ class ProcessingTest(unittest.TestCase):
     def test_public_api_follows_dad_processing_steps(self):
         self.assertEqual(
             doppler_centroid_estimation.Config.for_stripmap_s6().unwrap_weighting,
-            "coherence",
+            "uniform",
+        )
+        self.assertEqual(
+            doppler_centroid_estimation.Config.for_stripmap_s6().accc_range_weighting,
+            "phase",
         )
         self.assertEqual(
             azimuth_pre_processing.__all__,
@@ -189,7 +252,7 @@ class ProcessingTest(unittest.TestCase):
         same = np.convolve(data[0], matched_filter, mode="same")
         valid = np.convolve(data[0], matched_filter, mode="valid")
         np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
-        np.testing.assert_array_equal(result_times, times[1:-2])
+        np.testing.assert_array_equal(result_times, times[:13])
 
         supplied_output = np.empty_like(result)
         supplied_result, _ = azimuth_pre_processing.range.compression.compress(
@@ -235,6 +298,17 @@ class ProcessingTest(unittest.TestCase):
             iq_bias=2.0 - 3.0j,
         )
         np.testing.assert_allclose(corrected, result, rtol=2e-6, atol=2e-6)
+
+        phase_weighted, _, _ = doppler_centroid_estimation.estimate_fine_dc(
+            np.array([
+                [1.0, 100.0],
+                [1.0, 100.0j],
+            ]),
+            [doppler_centroid_estimation.RangeBlock(0, 2, 1.0, 0.0)],
+            1000.0,
+            range_weighting="phase",
+        )
+        self.assertAlmostEqual(phase_weighted[0], 125.0)
         gained = range_processing.dependent_gain.apply(
             np.ones((1, 2), dtype=np.complex64), [2.0, 3.0]
         )
