@@ -743,6 +743,8 @@ def _(DOPPLER_CENTROID_ANNOTATIONS, l0file, selected_chunk):
 
     doppler_centroid_chunk = selected_chunk + 1
     metadata_14 = l0file.get_acquisition_chunk_metadata(doppler_centroid_chunk)
+    data_14 = l0file.get_acquisition_chunk_data(doppler_centroid_chunk)
+
     return (
         DOPPLER_CENTROID_T0_S,
         ZERO_DOPPLER_MINUS_ACQ_TIME_S,

@@ -122,14 +122,20 @@ class Estimator:
         """Build the DAD Section 9.10 estimator from a decoded L0 product."""
         return cls.from_ephemeris(level0_product.ephemeris, wavelength_m)
 
-    def validate_time_coverage(self, azimuth_times_s):
-        """Require all azimuth times to lie inside the ephemeris interval."""
+    def validate_time_coverage(self, azimuth_times_s, *, max_extrapolation_s=0.0):
+        """Require azimuth times to lie within the allowed orbit interval."""
         times = np.asarray(azimuth_times_s, dtype=np.float64)
+        tolerance = float(max_extrapolation_s)
         if times.ndim != 1 or times.size == 0:
             raise ValueError("azimuth_times_s must be a non-empty 1-D array.")
         if np.any(np.diff(times) <= 0):
             raise ValueError("azimuth_times_s must be strictly increasing.")
-        if times[0] < self.orbit_times_s[0] or times[-1] > self.orbit_times_s[-1]:
+        if tolerance < 0:
+            raise ValueError("max_extrapolation_s must be non-negative.")
+        if (
+            times[0] < self.orbit_times_s[0] - tolerance
+            or times[-1] > self.orbit_times_s[-1] + tolerance
+        ):
             raise ValueError(
                 "Azimuth times are outside the available ephemeris interval."
             )

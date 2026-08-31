@@ -197,6 +197,37 @@ class PreparedScene:
             )
         return out
 
+    def align_into(self, output, *, batch_lines: int = 256):
+        """Write all segments on the common range grid into ``output``."""
+        expected_shape = (self.num_azimuth_lines, self.num_range_samples)
+        if output.shape != expected_shape:
+            raise ValueError(
+                f"output shape must be {expected_shape}, got {output.shape}."
+            )
+        if not np.issubdtype(output.dtype, np.complexfloating):
+            raise ValueError("output must have a complex dtype.")
+        if batch_lines < 1:
+            raise ValueError("batch_lines must be positive.")
+
+        for alignment in self.alignments:
+            for local_start in range(
+                0, alignment.segment.num_azimuth_lines, batch_lines
+            ):
+                local_stop = min(
+                    local_start + batch_lines,
+                    alignment.segment.num_azimuth_lines,
+                )
+                start = alignment.global_start_line + local_start
+                stop = alignment.global_start_line + local_stop
+                output[start:stop] = _align_segment_rows(
+                    alignment,
+                    local_start,
+                    local_stop,
+                    self.num_range_samples,
+                    lanczos_radius=self.lanczos_radius,
+                )
+        return output
+
 
 @dataclass(frozen=True)
 class AzimuthBlock:

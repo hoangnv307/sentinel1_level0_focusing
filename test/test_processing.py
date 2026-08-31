@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -14,6 +15,71 @@ import sentinel1_processing.raw_data_correction as raw_data_correction
 
 
 class ProcessingTest(unittest.TestCase):
+    def test_focus_slc_writes_into_supplied_array(self):
+        source = np.zeros((4, 3), dtype=np.complex64)
+        output = np.empty_like(source)
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=0,
+            overlap_samples=0,
+            step_samples=4,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(0,),
+        )
+        velocity = SimpleNamespace(
+            evaluate_block=lambda **_kwargs: np.ones(3)
+        )
+
+        with patch.object(
+            azimuth_processing.processing_blocks,
+            "focus_block",
+            return_value=np.ones_like(source),
+        ):
+            result = azimuth_processing.processing_blocks.focus_slc(
+                source,
+                np.arange(3.0) + 1.0,
+                np.arange(4.0),
+                lambda _line: np.zeros(3),
+                velocity,
+                layout,
+                wavelength_m=1.0,
+                speed_of_light_mps=1.0,
+                azimuth_sample_period_s=1.0,
+                range_sample_period_s=1.0,
+                range_sample_frequency_hz=1.0,
+                processing_bandwidth_hz=1.0,
+                fft_length=4,
+                output=output,
+            )
+
+        self.assertIs(result, output)
+        np.testing.assert_array_equal(output, np.ones_like(output))
+
+    def test_prepared_scene_aligns_segments_into_supplied_array(self):
+        first = doppler_centroid_estimation.Segment(
+            np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
+            np.arange(4.0),
+            np.array([0.0, 1.0]),
+            name="first",
+        )
+        second = doppler_centroid_estimation.Segment(
+            np.array([[9, 10, 11, 12], [13, 14, 15, 16]], dtype=np.complex64),
+            np.arange(1.0, 5.0),
+            np.array([2.0, 3.0]),
+            name="second",
+        )
+        prepared = doppler_centroid_estimation.prepare_segments(
+            [first, second], prf_hz=1.0
+        )
+        output = np.empty((4, 4), dtype=np.complex64)
+
+        result = prepared.align_into(output, batch_lines=1)
+
+        self.assertIs(result, output)
+        np.testing.assert_array_equal(
+            output,
+            [[1, 2, 3, 4], [5, 6, 7, 8], [0, 9, 10, 11], [0, 13, 14, 15]],
+        )
+
     def test_dce_fit_ignores_zero_quality_points(self):
         coefficients, valid, _ = doppler_centroid_estimation.fit_polynomial(
             np.arange(5.0),
@@ -124,6 +190,21 @@ class ProcessingTest(unittest.TestCase):
         valid = np.convolve(data[0], matched_filter, mode="valid")
         np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[1:-2])
+
+        supplied_output = np.empty_like(result)
+        supplied_result, _ = azimuth_pre_processing.range.compression.compress(
+            data,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            batch_lines=1,
+            range_reference_function=reference_function,
+            output_array=supplied_output,
+        )
+        self.assertIs(supplied_result, supplied_output)
+        np.testing.assert_allclose(supplied_result, result, rtol=2e-6, atol=2e-6)
 
         same_result, same_times = azimuth_pre_processing.range.compression.compress(
             data,

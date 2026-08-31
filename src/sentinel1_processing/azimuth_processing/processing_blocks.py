@@ -151,9 +151,20 @@ def focus_slc(
     src_segment_samples=1024,
     rcmc_kernel_length=16,
     rcmc_phases=64,
+    output=None,
 ):
     """Focus Stripmap blocks and assemble the SLC."""
-    focused_image = np.zeros_like(range_compressed, dtype=np.complex64)
+    if output is None:
+        focused_image = np.zeros_like(range_compressed, dtype=np.complex64)
+    else:
+        if output.shape != range_compressed.shape:
+            raise ValueError(
+                "output shape must match the range-compressed input shape."
+            )
+        if not np.issubdtype(output.dtype, np.complexfloating):
+            raise ValueError("output must have a complex dtype.")
+        focused_image = output
+        focused_image[...] = 0
     left_throw = layout.overlap_samples // 2
     right_throw = layout.overlap_samples - left_throw
     sinc_table = range_cell_migration_correction.build_interpolation_table(

@@ -24,6 +24,9 @@ class EphemerisTest(unittest.TestCase):
 
         np.testing.assert_array_equal(estimator.orbit_times_s, [1, 2, 3])
         estimator.validate_time_coverage([1.5, 2.5])
+        estimator.validate_time_coverage(
+            [0.5, 3.5], max_extrapolation_s=0.5
+        )
         with self.assertRaises(ValueError):
             estimator.validate_time_coverage([0.5, 2.5])
 

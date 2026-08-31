@@ -69,6 +69,7 @@ def compress(
     output="valid",
     iq_bias=0.0j,
     range_reference_function=None,
+    output_array=None,
 ):
     """Run the Range Compression steps from DAD Section 6.2.2."""
     n_azimuth, n_range = radar_data.shape
@@ -86,7 +87,17 @@ def compress(
         else np.asarray(range_reference_function, dtype=np.complex64)
     )
     output_length = n_range - num_tx_samples + 1 if output == "valid" else n_range
-    compressed = np.empty((n_azimuth, output_length), dtype=np.complex64)
+    expected_shape = (n_azimuth, output_length)
+    if output_array is None:
+        compressed = np.empty(expected_shape, dtype=np.complex64)
+    else:
+        if output_array.shape != expected_shape:
+            raise ValueError(
+                f"output_array shape must be {expected_shape}, got {output_array.shape}."
+            )
+        if not np.issubdtype(output_array.dtype, np.complexfloating):
+            raise ValueError("output_array must have a complex dtype.")
+        compressed = output_array
 
     output_times = None
     for start in range(0, n_azimuth, batch_lines):
