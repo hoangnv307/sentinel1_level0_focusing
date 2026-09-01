@@ -45,6 +45,30 @@ Các kết quả được lưu gồm:
 Khi một cache mới thay thế cache cũ của cùng công đoạn, notebook tự xóa bản
 cũ sau khi Focus hoàn tất để thư mục cache không tăng mãi.
 
+## RADARSAT-1 Level-0
+
+Giải mã một cửa sổ CEOS thành I/Q `complex64`:
+
+```bash
+/home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_level0_decoder.py
+```
+
+Chạy thêm Chirp Scaling Algorithm và ghi ảnh xem nhanh:
+
+```bash
+/home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_level0_decoder.py --focus
+```
+
+Mặc định script đọc file `.raw` duy nhất dưới `data/radarsat-1`, lấy 1.536 dòng
+x 2.048 mẫu range và ghi kết quả vào `output/`. Dùng `--help` để chọn cửa sổ khác.
+
+Ước lượng Doppler centroid từ L0, tính Geometry DC từ orbit và so sánh với
+CRT polynomial trong metadata L1:
+
+```bash
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_doppler_centroid.py
+```
+
 ## Quy tắc khi sửa notebook
 
 Tách tính toán và hiển thị thành hai cell:
