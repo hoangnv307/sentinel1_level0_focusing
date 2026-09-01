@@ -197,6 +197,10 @@ class ProcessingTest(unittest.TestCase):
     def test_public_api_follows_dad_processing_steps(self):
         self.assertEqual(
             doppler_centroid_estimation.Config.for_stripmap_s6().unwrap_weighting,
+            "coherence",
+        )
+        self.assertEqual(
+            doppler_centroid_estimation.Config.for_stripmap_s6().fit_weighting,
             "uniform",
         )
         self.assertEqual(

@@ -74,6 +74,9 @@ class Config:
     # Normalized lag-one coherence supplies the unpublished quality weights.
     unwrap_weighting: Literal["uniform", "coherence"] = "coherence"
 
+    # Polynomial fitting weights are independent of the unwrap weights.
+    fit_weighting: Literal["uniform", "coherence"] = "coherence"
+
     # DAD Eq. (5-18) uses power-weighted ACCC.  Phase weighting is retained as
     # an explicit product-reproduction option for scenes dominated by isolated
     # bright range samples.
@@ -97,7 +100,8 @@ class Config:
             polynomial_degree=2,
             rms_threshold_hz=20.0,
             outlier_sigma=2.5,
-            unwrap_weighting="uniform",
+            unwrap_weighting="coherence",
+            fit_weighting="uniform",
             accc_range_weighting="phase",
         )
 
@@ -1365,9 +1369,14 @@ class Estimator:
             dtype=np.float64,
         )
 
-        quality_weights = (
+        unwrap_weights = (
             coherence
             if self.config.unwrap_weighting == "coherence"
+            else None
+        )
+        fit_weights = (
+            coherence
+            if self.config.fit_weighting == "coherence"
             else None
         )
 
@@ -1376,7 +1385,7 @@ class Estimator:
             fine,
             self.prf_hz,
             fft_length=self.config.unwrap_fft_length,
-            weights=quality_weights,
+            weights=unwrap_weights,
         )
 
         if t0_s is None:
@@ -1421,7 +1430,7 @@ class Estimator:
                 degree=self.config.polynomial_degree,
                 outlier_sigma=self.config.outlier_sigma,
                 max_fit_iterations=self.config.max_fit_iterations,
-                weights=quality_weights,
+                weights=fit_weights,
             )
 
             ambiguity_resolved = True
@@ -1438,7 +1447,7 @@ class Estimator:
                 degree=self.config.polynomial_degree,
                 outlier_sigma=self.config.outlier_sigma,
                 max_iterations=self.config.max_fit_iterations,
-                weights=quality_weights,
+                weights=fit_weights,
             )
 
         return Estimate(
@@ -1637,9 +1646,14 @@ class Estimator:
                 range_weighting=self.config.accc_range_weighting,
             )
 
-            quality_weights = (
+            unwrap_weights = (
                 coherence
                 if self.config.unwrap_weighting == "coherence"
+                else None
+            )
+            fit_weights = (
+                coherence
+                if self.config.fit_weighting == "coherence"
                 else None
             )
             fine_unwrapped = unwrap_fine_dc(
@@ -1647,7 +1661,7 @@ class Estimator:
                 fine,
                 self.prf_hz,
                 fft_length=self.config.unwrap_fft_length,
-                weights=quality_weights,
+                weights=unwrap_weights,
             )
 
             t0 = float(range_times[0]) if t0_s is None else float(t0_s)
@@ -1681,7 +1695,7 @@ class Estimator:
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_fit_iterations=self.config.max_fit_iterations,
-                    weights=quality_weights,
+                    weights=fit_weights,
                 )
                 ambiguity_resolved = True
             else:
@@ -1693,7 +1707,7 @@ class Estimator:
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_iterations=self.config.max_fit_iterations,
-                    weights=quality_weights,
+                    weights=fit_weights,
                 )
 
             records.append(

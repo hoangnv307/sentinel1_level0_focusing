@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "marimo>=0.23.3",
+# ]
+# ///
+
 import marimo
 
 __generated_with = "0.23.9"
@@ -757,7 +764,6 @@ def _(DOPPLER_CENTROID_ANNOTATIONS, l0file, selected_chunk):
 
     doppler_centroid_chunk = selected_chunk + 1
     metadata_14 = l0file.get_acquisition_chunk_metadata(doppler_centroid_chunk)
-
     return (
         DOPPLER_CENTROID_T0_S,
         ZERO_DOPPLER_MINUS_ACQ_TIME_S,
@@ -817,9 +823,10 @@ def _(mo):
 
     Với sản phẩm S6 này, range-compression `valid` được gắn time axis tại
     zero-lag của matched filter. Fine DC dùng trung bình pha ACCC để tránh một
-    vài range sample công suất lớn chi phối cả block. Polynomial dùng least
-    squares không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS; cấu hình
-    này tái tạo đúng valid mask và `dataDcRmsError` của ba record annotation.
+    vài range sample công suất lớn chi phối cả block. Unwrap dùng coherence để
+    giảm ảnh hưởng của nghiệm noisy theo DAD §5.3; polynomial dùng least squares
+    không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS. Cấu hình này tái
+    tạo đúng valid mask và `dataDcRmsError` của ba record annotation.
     """)
     return
 
@@ -1206,7 +1213,7 @@ def _(
     fine_dc_point_summary = pd.DataFrame(fine_dc_summary_rows).set_index("record")
     display(fine_dc_point_summary)
     display(fine_dc_point_comparison)
-    return fine_dc_point_comparison, fine_dc_point_summary
+    return
 
 
 @app.cell(hide_code=True)
