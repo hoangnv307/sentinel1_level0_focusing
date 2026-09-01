@@ -17,6 +17,7 @@ MASTER_OSCILLATOR_HZ = 129.2683e6
 REPLICA_DURATION_S = 44.559e-6
 PULSE_DURATION_S = 42e-6
 CARRIER_FREQUENCY_HZ = 5.300432e9
+STANDARD_RANGE_BANDWIDTH_HZ = 11.78e6
 BEAM_NAMES = (
     "", "ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7",
     "WD1", "WD2", "WD3", "WD2_Recorded", "EX1", "EX2", "EH4",
@@ -121,6 +122,124 @@ def _doppler_coefficients(raw_path: Path, text: str) -> tuple[float, float, floa
     return (0.0, 0.0, 0.0)
 
 
+def read_leader(path: str | Path) -> dict:
+    """Giải CEOS L0 leader thành cấu trúc có thể ghi trực tiếp ra JSON."""
+
+    path = Path(path)
+    data = path.read_bytes()
+
+    def text(record: bytes, start: int, stop: int) -> str:
+        return record[start - 1 : stop].decode("ascii", errors="replace").strip()
+
+    def number(record: bytes, start: int, stop: int, integer: bool = False):
+        value = text(record, start, stop)
+        if not value:
+            return None
+        return int(value) if integer else float(value.replace("D", "E"))
+
+    def numbers(record: bytes, start: int, count: int, width: int) -> list[float | None]:
+        return [number(record, start + i * width, start + (i + 1) * width - 1) for i in range(count)]
+
+    records = []
+    offset = 0
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise ValueError("CEOS leader có record header bị cắt ngắn")
+        sequence, record_type, length = struct.unpack(">III", data[offset : offset + 12])
+        if length < 12 or offset + length > len(data):
+            raise ValueError(f"CEOS leader record {sequence} có độ dài không hợp lệ")
+        record = data[offset : offset + length]
+        decoded: dict = {
+            "sequence": sequence,
+            "record_type": f"0x{record_type:08X}",
+            "byte_offset": offset,
+            "length": length,
+        }
+        if record_type == 0x3FC01212:
+            decoded.update({
+                "name": "SAR Leader File Descriptor",
+                "format_document": text(record, 17, 28),
+                "format_revision": text(record, 29, 30),
+                "software_id": text(record, 33, 44),
+                "file_name": text(record, 49, 64),
+                "dataset_summary_records": number(record, 181, 186, True),
+                "platform_position_records": number(record, 205, 210, True),
+                "platform_position_record_length": number(record, 211, 216, True),
+            })
+        elif record_type == 0x120A1214:
+            decoded.update({
+                "name": "Data Set Summary",
+                "scene_id": text(record, 21, 36),
+                "scene_center_time": text(record, 69, 100),
+                "orbit_direction": text(record, 101, 116),
+                "ellipsoid": text(record, 165, 180),
+                "ellipsoid_semi_major_km": number(record, 181, 196),
+                "ellipsoid_semi_minor_km": number(record, 197, 212),
+                "mission_id": text(record, 397, 412),
+                "sensor_id": text(record, 413, 444),
+                "orbit_number": number(record, 445, 452, True),
+                "sensor_clock_angle_deg": number(record, 477, 484),
+                "radar_wavelength_m": number(record, 501, 516),
+                "pulse_code": text(record, 519, 534),
+                "pulse_length_us": number(record, 743, 758),
+                "baseband_conversion": text(record, 759, 762),
+                "range_compressed": text(record, 763, 766),
+                "quantization_bits": number(record, 799, 806, True),
+                "quantization_descriptor": text(record, 807, 818),
+                "processing_facility": text(record, 1047, 1062),
+                "processing_system": text(record, 1063, 1070),
+                "processing_version": text(record, 1071, 1078),
+                "product_type": text(record, 1111, 1142),
+                "alt_doppler_hz": numbers(record, 1415, 3, 16),
+                "crt_doppler_hz": numbers(record, 1479, 3, 16),
+                "range_time_direction": text(record, 1527, 1534),
+                "azimuth_time_direction": text(record, 1535, 1542),
+                "alt_doppler_rate_hz_s": numbers(record, 1543, 3, 16),
+                "crt_doppler_rate_hz_s": numbers(record, 1607, 3, 16),
+                "line_content": text(record, 1671, 1678),
+                "clutter_lock": text(record, 1679, 1682),
+                "autofocus": text(record, 1683, 1686),
+                "vendor_extension_ascii": " ".join(text(record, 1735, length).split()),
+            })
+        elif record_type == 0x121E1214:
+            point_count = number(record, 141, 144, True)
+            state_vectors = []
+            for index in range(point_count or 0):
+                start = 387 + index * 132
+                velocity_mm_s = numbers(record, start + 66, 3, 22)
+                state_vectors.append({
+                    "index": index + 1,
+                    "seconds_of_day": number(record, 161, 182) + index * number(record, 183, 204),
+                    "position_m": numbers(record, start, 3, 22),
+                    "velocity_m_s": [value / 1_000 if value is not None else None for value in velocity_mm_s],
+                })
+            decoded.update({
+                "name": "Platform Position",
+                "orbital_elements_designator": text(record, 13, 44),
+                "orbital_elements": numbers(record, 45, 6, 16),
+                "state_vector_count": point_count,
+                "first_point_date": {
+                    "year": number(record, 145, 148, True),
+                    "month": number(record, 149, 152, True),
+                    "day": number(record, 153, 156, True),
+                    "day_of_year": number(record, 157, 160, True),
+                },
+                "first_point_seconds_of_day": number(record, 161, 182),
+                "point_interval_s": number(record, 183, 204),
+                "reference_coordinate_system": text(record, 205, 268),
+                "greenwich_hour_angle_deg": number(record, 269, 290),
+                "state_vectors": state_vectors,
+            })
+        else:
+            decoded.update({
+                "name": "Unknown",
+                "ascii": " ".join(text(record, 13, length).split()),
+            })
+        records.append(decoded)
+        offset += length
+    return {"source": str(path), "size_bytes": len(data), "records": records}
+
+
 def read_metadata(raw_path: str | Path, meta_path: str | Path | None = None) -> RawMetadata:
     """Đọc các tham số cần cho giải mã và chirp scaling."""
 
@@ -158,7 +277,11 @@ def read_metadata(raw_path: str | Path, meta_path: str | Path | None = None) -> 
     orbital_velocity = (vx * vx + vy * vy + vz * vz) ** 0.5
     effective_velocity = (orbital_velocity * ground_velocity) ** 0.5 if ground_velocity else 7062.0
     sample_rate_hz = float(aux["sample_rate_hz"])
-    chirp_rate = -7.214e11 if sample_rate_hz > 30e6 else (-4.1619e11 if sample_rate_hz > 15e6 else -2.7931e11)
+    chirp_rate = -7.214e11 if sample_rate_hz > 30e6 else (
+        -4.1619e11
+        if sample_rate_hz > 15e6
+        else -STANDARD_RANGE_BANDWIDTH_HZ / PULSE_DURATION_S
+    )
     doppler_coefficients = _doppler_coefficients(raw_path, text)
     center_pixel = int(aux["range_samples"]) / 2
     doppler_centroid = sum(value * center_pixel**power for power, value in enumerate(doppler_coefficients))

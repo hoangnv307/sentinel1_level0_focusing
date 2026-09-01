@@ -10,6 +10,7 @@ from radarsat1_processing import (
     compare_doppler_centroid,
     estimate_doppler_centroid,
     read_l1_reference,
+    read_metadata,
 )
 from sentinel1_processing.dce_plotting import plot_comparisons
 
@@ -27,9 +28,13 @@ def main() -> None:
     parser.add_argument("--l1-metadata", type=Path, default=None)
     parser.add_argument("--azimuth-lines", type=int, default=6000)
     parser.add_argument("--range-blocks", type=int, default=20)
-    parser.add_argument("--output", type=Path, default=Path("output/radarsat1_dce.png"))
     parser.add_argument(
-        "--residual-output", type=Path, default=Path("output/radarsat1_dce_residual.png")
+        "--output", type=Path, default=Path("output/radarsat-1/radarsat1_dce.png")
+    )
+    parser.add_argument(
+        "--residual-output",
+        type=Path,
+        default=Path("output/radarsat-1/radarsat1_dce_residual.png"),
     )
     args = parser.parse_args()
 
@@ -41,16 +46,32 @@ def main() -> None:
         num_range_blocks=args.range_blocks,
     )
     result = compare_doppler_centroid(estimated, read_l1_reference(l1_path))
+    metadata = read_metadata(raw)
+    l0_pixels = (
+        np.asarray(result["range_times_s"]) - metadata.range_start_time_s
+    ) * metadata.sample_rate_hz
+    l0_crt_hz = np.polynomial.polynomial.polyval(
+        l0_pixels, metadata.doppler_centroid_coefficients
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     figure = plot_comparisons([result])[0]
-    figure.axes[0].lines[0].set_label("L1 CRT reference polynomial")
-    figure.axes[0].lines[1].set_label("Estimated data DC polynomial")
-    figure.axes[0].lines[2].set_label("Orbit geometry DC polynomial")
-    figure.axes[0].collections[0].set_label(
+    axis = figure.axes[0]
+    axis.lines[0].remove()
+    axis.lines[0].set_label("Estimated data DC polynomial")
+    axis.lines[1].set_label("Orbit geometry DC polynomial")
+    axis.collections[0].set_label(
         f"Fine DC points ({np.count_nonzero(estimated.valid_mask)})"
     )
-    figure.axes[0].legend()
+    axis.plot(
+        np.asarray(result["range_times_s"]) * 1e3,
+        l0_crt_hz,
+        color="0.45",
+        linestyle="-.",
+        label="L0 CRT reference polynomial",
+    )
+    axis.set_title(f"RADARSAT-1 DCE: fit RMS={estimated.rms_error_hz:.3f} Hz")
+    axis.legend()
     figure.savefig(args.output, dpi=160)
     plt.close(figure)
 
@@ -66,6 +87,13 @@ def main() -> None:
         np.asarray(result["geometry_hz"]) - np.asarray(result["annotation_hz"]),
         label="Orbit geometry DC − L1 CRT",
     )
+    axis.plot(
+        range_km,
+        np.asarray(result["estimated_hz"]) - l0_crt_hz,
+        color="0.45",
+        linestyle="-.",
+        label="Estimated data DC − L0 CRT",
+    )
     axis.axhline(0, color="black", linewidth=1)
     axis.set(xlabel="Slant range [km]", ylabel="Residual [Hz]", title="RADARSAT-1 DCE residuals")
     axis.grid(True, alpha=0.3)
@@ -76,6 +104,10 @@ def main() -> None:
 
     print(f"Fine DC fit RMS: {estimated.rms_error_hz:.3f} Hz")
     print(f"Estimated vs L1 CRT RMSE: {result['rmse_hz']:.3f} Hz")
+    print(
+        "Estimated vs L0 CRT RMSE: "
+        f"{np.sqrt(np.mean((np.asarray(result['estimated_hz']) - l0_crt_hz) ** 2)):.3f} Hz"
+    )
     print(f"PRF ambiguity number: {estimated.ambiguity_number}")
     print(f"Data DC polynomial [Hz, Hz/s, Hz/s²]: {estimated.data_dc_polynomial}")
     print(f"Geometry DC polynomial [Hz, Hz/s, Hz/s²]: {estimated.geometry_dc_polynomial}")

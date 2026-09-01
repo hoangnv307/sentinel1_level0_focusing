@@ -21,12 +21,23 @@ class Radarsat1Test(unittest.TestCase):
         self.assertEqual(metadata.beam, "ST7")
         self.assertAlmostEqual(metadata.sample_rate_hz, 12_926_830.0)
         self.assertAlmostEqual(metadata.prf_hz, 1293.976976976977)
+        self.assertAlmostEqual(metadata.chirp_rate_hz_per_s, -11.78e6 / 42e-6)
         self.assertAlmostEqual(metadata.doppler_centroid_hz, -10910.71, places=2)
         self.assertAlmostEqual(metadata.effective_velocity_mps, 7045.4, places=0)
         self.assertEqual(data.dtype, np.complex64)
         np.testing.assert_array_equal(data.shape, (2, 4))
         np.testing.assert_array_equal(data.real % 2, 1)
         np.testing.assert_array_equal(data.imag % 2, 1)
+
+    def test_extracts_l0_leader(self):
+        leader = radarsat1_processing.read_leader(RAW.with_suffix(".ldr"))
+        self.assertEqual([record["length"] for record in leader["records"]], [720, 4096, 8960])
+        self.assertEqual(leader["records"][1]["scene_id"], "RSAT-1-SAR-RAW")
+        np.testing.assert_allclose(
+            leader["records"][1]["crt_doppler_hz"],
+            [-10549.263, -0.10592052, 2.9867758e-6],
+        )
+        self.assertEqual(len(leader["records"][2]["state_vectors"]), 15)
 
     @unittest.skipUnless(L1.exists(), "không có metadata RADARSAT-1 L1")
     def test_orbit_geometry_and_l1_reference_are_independent(self):
@@ -36,10 +47,16 @@ class Radarsat1Test(unittest.TestCase):
         reference = radarsat1_processing.read_l1_reference(L1)
 
         np.testing.assert_allclose(geometry, [-10371.2, -11224.5], atol=2.0)
+        pixels = np.array([0, reference.pixel_count - 1])
         np.testing.assert_allclose(
-            reference.evaluate([reference.near_slant_range_m, reference.far_slant_range_m]),
-            [-10570.5683594, -11317.5],
-            atol=1.0,
+            reference.evaluate(reference.slant_range_for_pixel(pixels)),
+            np.polynomial.polynomial.polyval(pixels, reference.data_coefficients),
+            atol=1e-6,
+        )
+        linear_midpoint = (reference.near_slant_range_m + reference.far_slant_range_m) / 2
+        self.assertGreater(
+            abs(reference.slant_range_for_pixel((reference.pixel_count - 1) / 2) - linear_midpoint),
+            500,
         )
 
 

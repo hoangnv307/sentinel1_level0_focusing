@@ -1,6 +1,6 @@
 """Giải mã CEOS Level-0 và tạo ảnh RADARSAT-1 bằng chirp scaling."""
 
-from .ceos import RawMetadata, decode, read_metadata
+from .ceos import RawMetadata, decode, read_leader, read_metadata
 from .chirp_scaling import focus, to_uint8
 from .doppler_centroid import (
     L1DopplerReference,
@@ -11,7 +11,7 @@ from .doppler_centroid import (
 )
 
 __all__ = [
-    "RawMetadata", "decode", "read_metadata", "focus", "to_uint8",
+    "RawMetadata", "decode", "read_leader", "read_metadata", "focus", "to_uint8",
     "L1DopplerReference", "compare_doppler_centroid",
     "estimate_doppler_centroid", "geometry_doppler", "read_l1_reference",
 ]

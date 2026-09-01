@@ -25,14 +25,33 @@ class L1DopplerReference:
     near_slant_range_m: float
     far_slant_range_m: float
     pixel_count: int
+    pixel_spacing_m: float
+    spacecraft_radius_m: float
+    earth_radius_m: float
+
+    def slant_range_for_pixel(self, pixel) -> np.ndarray:
+        pixel = np.asarray(pixel, dtype=np.float64)
+        near_ground_range = self._ground_range(self.near_slant_range_m)
+        earth_angle = (near_ground_range + pixel * self.pixel_spacing_m) / self.earth_radius_m
+        return np.sqrt(
+            self.spacecraft_radius_m**2
+            + self.earth_radius_m**2
+            - 2 * self.spacecraft_radius_m * self.earth_radius_m * np.cos(earth_angle)
+        )
+
+    def _ground_range(self, slant_range_m) -> np.ndarray:
+        slant_range = np.asarray(slant_range_m, dtype=np.float64)
+        cosine = (
+            self.spacecraft_radius_m**2
+            + self.earth_radius_m**2
+            - slant_range**2
+        ) / (2 * self.spacecraft_radius_m * self.earth_radius_m)
+        return self.earth_radius_m * np.arccos(np.clip(cosine, -1.0, 1.0))
 
     def evaluate(self, slant_range_m) -> np.ndarray:
-        slant_range = np.asarray(slant_range_m, dtype=np.float64)
         pixel = (
-            (slant_range - self.near_slant_range_m)
-            / (self.far_slant_range_m - self.near_slant_range_m)
-            * (self.pixel_count - 1)
-        )
+            self._ground_range(slant_range_m) - self._ground_range(self.near_slant_range_m)
+        ) / self.pixel_spacing_m
         return np.polynomial.polynomial.polyval(pixel, self.data_coefficients)
 
 
@@ -51,6 +70,10 @@ def read_l1_reference(path: str | Path) -> L1DopplerReference:
     """Đọc CRT Doppler polynomial từ bản text của CEOS L1 leader."""
 
     text = Path(path).read_text()
+    position = np.array([
+        _number(text, f"Spacecraft {axis}-position at the image center")
+        for axis in "XYZ"
+    ])
     return L1DopplerReference(
         data_coefficients=(
             _number(text, "Doppler frequency at the near range"),
@@ -60,6 +83,9 @@ def read_l1_reference(path: str | Path) -> L1DopplerReference:
         near_slant_range_m=1_000 * _number(text, "Slant range to the first image pixel"),
         far_slant_range_m=1_000 * _number(text, "Slant range to the last image pixel"),
         pixel_count=int(_number(text, "Actual (no filler) number of pixels per line")),
+        pixel_spacing_m=_number(text, "Pixel spacing in range"),
+        spacecraft_radius_m=1_000 * float(np.linalg.norm(position)),
+        earth_radius_m=1_000 * _number(text, "Radius of the earth at image center"),
     )
 
 

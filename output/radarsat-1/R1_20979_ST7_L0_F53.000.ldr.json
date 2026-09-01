@@ -1,0 +1,313 @@
+{
+  "source": "data/radarsat-1/R1_20979_ST7_L0_F53/R1_20979_ST7_L0_F53.000.ldr",
+  "size_bytes": 13776,
+  "records": [
+    {
+      "sequence": 1,
+      "record_type": "0x3FC01212",
+      "byte_offset": 0,
+      "length": 720,
+      "name": "SAR Leader File Descriptor",
+      "format_document": "CEOS-SAR-CCT",
+      "format_revision": "B",
+      "software_id": "SKY 5.4.8",
+      "file_name": "RSAT-1-SAR-RAW",
+      "dataset_summary_records": 1,
+      "platform_position_records": 1,
+      "platform_position_record_length": 8960
+    },
+    {
+      "sequence": 2,
+      "record_type": "0x120A1214",
+      "byte_offset": 720,
+      "length": 4096,
+      "name": "Data Set Summary",
+      "scene_id": "RSAT-1-SAR-RAW",
+      "scene_center_time": "19991111111057677",
+      "orbit_direction": "ASCENDING",
+      "ellipsoid": "INTERNATIONAL",
+      "ellipsoid_semi_major_km": 6378.14,
+      "ellipsoid_semi_minor_km": 6356.755,
+      "mission_id": "RSAT-1",
+      "sensor_id": "RSAT-1-CS-    -HH",
+      "orbit_number": 20979,
+      "sensor_clock_angle_deg": 90.0,
+      "radar_wavelength_m": 0.05656,
+      "pulse_code": "LINEAR FM CHIRP",
+      "pulse_length_us": 42.0,
+      "baseband_conversion": "YES",
+      "range_compressed": "NOT",
+      "quantization_bits": 4,
+      "quantization_descriptor": "UNIFORM I,Q",
+      "processing_facility": "ASF",
+      "processing_system": "SKY",
+      "processing_version": "5.4.8",
+      "product_type": "UNPROCESSED SIGNAL DATA",
+      "alt_doppler_hz": [
+        -10548.604,
+        0.0028717045,
+        1.050981e-08
+      ],
+      "crt_doppler_hz": [
+        -10549.263,
+        -0.10592052,
+        2.9867758e-06
+      ],
+      "range_time_direction": "INCREASE",
+      "azimuth_time_direction": "INCREASE",
+      "alt_doppler_rate_hz_s": [
+        -1677.1582,
+        2.1370096e-05,
+        -6.8071357e-14
+      ],
+      "crt_doppler_rate_hz_s": [
+        -1677.1137,
+        0.018998468,
+        -1.8524e-07
+      ],
+      "line_content": "RANGE",
+      "clutter_lock": "NOT",
+      "autofocus": "NOT",
+      "vendor_extension_ascii": "VEXCEL 1.0 3.4157003671E+04 -3.3544305326E+03 1.2316107453E+02 -2.0036110470E+00 1.2185833118E-02 0.0000000E+00/usr/asf/vendor/apex/config//sensors//m0000022.pap 0.0000000E+001 1.0983456E+061999-315-11:11:02.947 -1.0868300E+04 -7.3360600E-03 2.1502900E-08 -1.9224700E-14 3.7566100E+00 -6.4402000E-06 -7.1907000E-11 -2.1759400E-17 1.3919400E-02 6.5701100E-07 1.8366700E-11 5.7271200E-18 0.0000000E+00 0.0000000E+00 0.0000000E+00 0.0000000E+00 1 1.1014996E+061999-315-11:11:02.947 9.9950900E-01 7.0788200E+03 -1.2322000E-04 -6.2930300E-02 -1.0212700E-07"
+    },
+    {
+      "sequence": 3,
+      "record_type": "0x121E1214",
+      "byte_offset": 4816,
+      "length": 8960,
+      "name": "Platform Position",
+      "orbital_elements_designator": "",
+      "orbital_elements": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "state_vector_count": 15,
+      "first_point_date": {
+        "year": 1999,
+        "month": 11,
+        "day": 11,
+        "day_of_year": 315
+      },
+      "first_point_seconds_of_day": 39915.160002,
+      "point_interval_s": 480.0,
+      "reference_coordinate_system": "INERTIAL",
+      "greenwich_hour_angle_deg": 216.465804,
+      "state_vectors": [
+        {
+          "index": 1,
+          "seconds_of_day": 39915.160002,
+          "position_m": [
+            5524143.489826801,
+            -4575573.682281622,
+            -118.05
+          ],
+          "velocity_m_s": [
+            -715.353381325841,
+            -850.4964984365539,
+            7372.82324
+          ]
+        },
+        {
+          "index": 2,
+          "seconds_of_day": 40395.160002,
+          "position_m": [
+            4520619.829495763,
+            -4408568.327867824,
+            3393270.2347480454
+          ],
+          "velocity_m_s": [
+            -3378.9894394889275,
+            1532.0075424444126,
+            6470.5642828069085
+          ]
+        },
+        {
+          "index": 3,
+          "seconds_of_day": 40875.160002,
+          "position_m": [
+            2413555.8039932474,
+            -3165367.3474181867,
+            5956313.736558073
+          ],
+          "velocity_m_s": [
+            -5217.029716115906,
+            3539.593540145177,
+            3986.0371689815784
+          ]
+        },
+        {
+          "index": 4,
+          "seconds_of_day": 41355.160002,
+          "position_m": [
+            -282230.97292166937,
+            -1150137.5742050696,
+            7063219.386213056
+          ],
+          "velocity_m_s": [
+            -5781.4168880095895,
+            4682.159752468133,
+            530.284888623307
+          ]
+        },
+        {
+          "index": 5,
+          "seconds_of_day": 41835.160002,
+          "position_m": [
+            -2909276.8864199654,
+            1145371.0970267772,
+            6444589.219201467
+          ],
+          "velocity_m_s": [
+            -4936.631839104829,
+            4683.311698587205,
+            -3054.4322061200173
+          ]
+        },
+        {
+          "index": 6,
+          "seconds_of_day": 42315.160002,
+          "position_m": [
+            -4826950.071252617,
+            3161515.207272568,
+            4250871.645629046
+          ],
+          "velocity_m_s": [
+            -2886.6822557345977,
+            3541.968387141718,
+            -5895.689347404115
+          ]
+        },
+        {
+          "index": 7,
+          "seconds_of_day": 42795.160002,
+          "position_m": [
+            -5566458.459430326,
+            4405964.81100169,
+            1017124.833006226
+          ],
+          "velocity_m_s": [
+            -130.23297223030346,
+            1534.9933946516855,
+            -7296.490561487402
+          ]
+        },
+        {
+          "index": 8,
+          "seconds_of_day": 43275.160002,
+          "position_m": [
+            -4947286.912332269,
+            4575010.321795856,
+            -2465647.9334821817
+          ],
+          "velocity_m_s": [
+            2655.3405631178225,
+            -844.4384818493979,
+            -6912.053312516371
+          ]
+        },
+        {
+          "index": 9,
+          "seconds_of_day": 43755.160002,
+          "position_m": [
+            -3122896.2421173467,
+            3629616.2648073565,
+            -5346750.479100153
+          ],
+          "velocity_m_s": [
+            4787.052801195138,
+            -3011.538881173204,
+            -4843.75653249266
+          ]
+        },
+        {
+          "index": 10,
+          "seconds_of_day": 44235.160002,
+          "position_m": [
+            -540066.2966128122,
+            1802877.8921312995,
+            -6926915.5101297945
+          ],
+          "velocity_m_s": [
+            5751.425136011195,
+            -4441.594740811118,
+            -1605.0416675166139
+          ]
+        },
+        {
+          "index": 11,
+          "seconds_of_day": 44715.160002,
+          "position_m": [
+            2173680.011649299,
+            -460570.17773469497,
+            -6825482.070319941
+          ],
+          "velocity_m_s": [
+            5322.014132049096,
+            -4794.429503274721,
+            2019.031376929311
+          ]
+        },
+        {
+          "index": 12,
+          "seconds_of_day": 45195.160002,
+          "position_m": [
+            4360776.718157006,
+            -2612333.3408846227,
+            -5066834.387289564
+          ],
+          "velocity_m_s": [
+            3601.2973452893525,
+            -3985.1570979008316,
+            5158.050180483592
+          ]
+        },
+        {
+          "index": 13,
+          "seconds_of_day": 45675.160002,
+          "position_m": [
+            5488600.615794235,
+            -4129441.1736228713,
+            -2074957.9124238172
+          ],
+          "velocity_m_s": [
+            998.7503902488604,
+            -2203.6687617573994,
+            7049.437807171754
+          ]
+        },
+        {
+          "index": 14,
+          "seconds_of_day": 46155.160002,
+          "position_m": [
+            5279074.235981798,
+            -4640294.086859665,
+            1423326.954709368
+          ],
+          "velocity_m_s": [
+            -1854.4777310252286,
+            120.20817871853455,
+            7222.241352040766
+          ]
+        },
+        {
+          "index": 15,
+          "seconds_of_day": 46635.160002,
+          "position_m": [
+            3781019.879094119,
+            -4018513.782962932,
+            4573218.57938604
+          ],
+          "velocity_m_s": [
+            -4257.091316763697,
+            2416.361820844528,
+            5627.976029351807
+          ]
+        }
+      ]
+    }
+  ]
+}

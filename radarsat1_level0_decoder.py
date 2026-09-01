@@ -24,8 +24,14 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=2048)
     parser.add_argument("--agc", action="store_true", help="bù suy hao AGC như mã MATLAB")
     parser.add_argument("--focus", action="store_true", help="chạy thêm Chirp Scaling Algorithm")
-    parser.add_argument("--output", type=Path, default=Path("output/radarsat1_decoded.npy"))
-    parser.add_argument("--image", type=Path, default=Path("output/radarsat1_csa.png"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("data/radarsat-1/generated-output/radarsat1_decoded.npy")
+    )
+    parser.add_argument(
+        "--image",
+        type=Path,
+        default=Path("data/radarsat-1/generated-output/radarsat1_csa.png"),
+    )
     args = parser.parse_args()
 
     raw = args.raw or _default_raw()
