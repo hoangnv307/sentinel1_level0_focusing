@@ -98,6 +98,7 @@ def _(Path):
 def _(Path):
     import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
     import sentinel1_processing.range_processing as range_processing
+    import sentinel1_processing.s6_parameters as s6_parameters
 
     _roots = (
         Path(azimuth_pre_processing.__file__).parent,
@@ -107,15 +108,18 @@ def _(Path):
         path.read_bytes()
         for root in _roots
         for path in sorted(root.rglob("*.py"))
-    )
-    return azimuth_pre_processing, range_processing, range_source
+    ) + (Path(s6_parameters.__file__).read_bytes(),)
+    return azimuth_pre_processing, range_processing, range_source, s6_parameters
 
 
 @app.cell
-def _(Path):
+def _(Path, s6_parameters):
     import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
 
-    doppler_source = Path(doppler_centroid_estimation.__file__).read_bytes()
+    doppler_source = (
+        Path(doppler_centroid_estimation.__file__).read_bytes(),
+        Path(s6_parameters.__file__).read_bytes(),
+    )
     return doppler_centroid_estimation, doppler_source
 
 
@@ -135,13 +139,13 @@ def _(Path):
 
 
 @app.cell
-def _(Path):
+def _(Path, s6_parameters):
     import sentinel1_processing.azimuth_processing as azimuth_processing
 
     _root = Path(azimuth_processing.__file__).parent
     azimuth_source = tuple(
         path.read_bytes() for path in sorted(_root.rglob("*.py"))
-    )
+    ) + (Path(s6_parameters.__file__).read_bytes(),)
     return azimuth_processing, azimuth_source
 
 
@@ -160,6 +164,7 @@ def _(np):
         pulse_ramp_rate_hz_per_s,
         pulse_length_s,
         output="valid",
+        range_time_shift_s=0.0,
         output_array=None,
     ):
         radar_data = l0file.get_acquisition_chunk_data(chunk)
@@ -174,6 +179,7 @@ def _(np):
             pulse_length_s=pulse_length_s,
             iq_bias=np.complex128(iq_bias),
             range_reference_function=range_reference_function,
+            range_time_shift_s=range_time_shift_s,
             output=output,
             output_array=output_array,
         )
@@ -416,9 +422,9 @@ def _(mo):
 
 
 @app.cell
-def _(selection, sentinel1decoder):
+def _(s6_parameters, selection, sentinel1decoder):
     c = sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
-    wavelength_m = sentinel1decoder.constants.TX_WAVELENGTH_M
+    wavelength_m = s6_parameters.RADAR_WAVELENGTH_M
 
     RGDEC = selection["Range Decimation"].iloc[0]
     PRI = selection["PRI"].iloc[0]
@@ -602,9 +608,8 @@ def _(mo):
 
 
 @app.cell
-def _(range_processing, raw_slant_range_time_vec_s):
-    # From references/s1a-aux-ins.xml: internalCalibrationParams/swstBias.
-    SWST_BIAS_S = -8.2256909e-09
+def _(range_processing, raw_slant_range_time_vec_s, s6_parameters):
+    SWST_BIAS_S = s6_parameters.SWST_BIAS_S
     raw_slant_range_time_vec_s_1 = range_processing.swst_bias.correct(raw_slant_range_time_vec_s, SWST_BIAS_S)
     return SWST_BIAS_S, raw_slant_range_time_vec_s_1
 
@@ -758,18 +763,10 @@ def _(mo):
 
 
 @app.cell
-def _(DOPPLER_CENTROID_ANNOTATIONS, l0file, selected_chunk):
-    ZERO_DOPPLER_MINUS_ACQ_TIME_S = 0.386295160  # Scene timing offset.
-    DOPPLER_CENTROID_T0_S = DOPPLER_CENTROID_ANNOTATIONS[0]["t0"]
-
+def _(l0file, selected_chunk):
     doppler_centroid_chunk = selected_chunk + 1
     metadata_14 = l0file.get_acquisition_chunk_metadata(doppler_centroid_chunk)
-    return (
-        DOPPLER_CENTROID_T0_S,
-        ZERO_DOPPLER_MINUS_ACQ_TIME_S,
-        doppler_centroid_chunk,
-        metadata_14,
-    )
+    return doppler_centroid_chunk, metadata_14
 
 
 @app.cell(hide_code=True)
@@ -866,12 +863,10 @@ def _(mo):
 @app.cell
 def _(
     CACHE_ROOT,
-    DOPPLER_CENTROID_T0_S,
     Path,
     TXPL,
     TXPRR,
     TXPSF,
-    ZERO_DOPPLER_MINUS_ACQ_TIME_S,
     azimuth_pre_processing,
     doppler_centroid_chunk,
     doppler_centroid_estimation,
@@ -892,10 +887,15 @@ def _(
     raw_data_correction,
     raw_slant_range_time_14,
     raw_slant_range_time_vec_s_1,
+    s6_parameters,
     scene_start_acq_s,
     scene_stop_acq_s,
     selected_chunk,
 ):
+    _common_range_start = min(
+        raw_slant_range_time_vec_s_1[0], raw_slant_range_time_14[0]
+    )
+
     def _process_dce_to_file(path, chunk, range_times, azimuth_times):
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -921,6 +921,11 @@ def _(
             pulse_start_frequency_hz=TXPSF,
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
+            range_time_shift_s=(
+                round((range_times[0] - _common_range_start) * range_sample_freq)
+                / range_sample_freq
+                - (range_times[0] - _common_range_start)
+            ),
             output="valid",
             output_array=output,
         )
@@ -965,16 +970,12 @@ def _(
         ]
         estimates, prepared = doppler_centroid_estimator.estimate_segments(
             segments,
-            t0_s=DOPPLER_CENTROID_T0_S,
+            known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
             slice_start_times_s=[scene_start_acq_s],
             last_slice_stop_time_s=scene_stop_acq_s,
-            product_start_time_s=(
-                scene_start_acq_s + ZERO_DOPPLER_MINUS_ACQ_TIME_S
-            ),
-            product_stop_time_s=(
-                scene_stop_acq_s + ZERO_DOPPLER_MINUS_ACQ_TIME_S
-            ),
-            zero_dop_minus_acq_time_s=ZERO_DOPPLER_MINUS_ACQ_TIME_S,
+            product_start_time_s=scene_start_acq_s,
+            product_stop_time_s=scene_stop_acq_s,
+            zero_dop_minus_acq_time_s=0.0,
             return_prepared_scene=True,
         )
         return estimates, prepared.alignment_summary()
@@ -1023,7 +1024,6 @@ def _(mo):
 
 @app.cell
 def _(
-    ZERO_DOPPLER_MINUS_ACQ_TIME_S,
     doppler_centroid_estimates,
     doppler_centroid_estimator,
     packet_azimuth_times_s,
@@ -1035,7 +1035,6 @@ def _(
             line_index=block_center_index,
             azimuth_times_s=packet_azimuth_times_s,
             slant_range_times_s=slant_range_time_vec_s,
-            azimuth_time_offset_s=ZERO_DOPPLER_MINUS_ACQ_TIME_S,
         )
 
     return (doppler_centroid_for_block,)
@@ -1316,9 +1315,10 @@ def _(
     effective_velocity_estimator,
     len_az_line,
     packet_azimuth_times_s,
+    s6_parameters,
     slant_range_vec_m,
 ):
-    AZIMUTH_PROCESSING_BANDWIDTH_HZ = 1398.0
+    AZIMUTH_PROCESSING_BANDWIDTH_HZ = s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ
     velocity_check_index = len_az_line // 2
     velocity_check = effective_velocity_estimator.evaluate_block(
         block_center_time_s=packet_azimuth_times_s[velocity_check_index],
@@ -1376,9 +1376,11 @@ def _(mo):
 
 
 @app.cell
-def _():
-    FOCUS_FFT_LEN = 4096
-    EXTRA_AZIMUTH_PROCESSING_BLOCK_OVERLAP = 50
+def _(s6_parameters):
+    FOCUS_FFT_LEN = s6_parameters.FOCUS_FFT_LENGTH
+    EXTRA_AZIMUTH_PROCESSING_BLOCK_OVERLAP = (
+        s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES
+    )
     return EXTRA_AZIMUTH_PROCESSING_BLOCK_OVERLAP, FOCUS_FFT_LEN
 
 
@@ -1416,7 +1418,13 @@ def _(
         fft_length=FOCUS_FFT_LEN,
         extra_overlap_samples=EXTRA_AZIMUTH_PROCESSING_BLOCK_OVERLAP,
     )
-    return (azimuth_block_layout,)
+    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+        packet_azimuth_times_s,
+        len(slant_range_vec_m),
+        azimuth_block_layout,
+        azimuth_sample_period_s=1.0 / az_sample_freq,
+    )
+    return azimuth_block_layout, output_geometry
 
 
 @app.cell
@@ -1450,8 +1458,8 @@ def _(mo):
 
 
 @app.cell
-def _():
-    SRC_SEGMENT_SAMPLES = 1024
+def _(s6_parameters):
+    SRC_SEGMENT_SAMPLES = s6_parameters.SRC_SEGMENT_SAMPLES
     return (SRC_SEGMENT_SAMPLES,)
 
 
@@ -1466,9 +1474,9 @@ def _(mo):
 
 
 @app.cell
-def _():
-    RCMC_KERNEL_LENGTH = 16
-    RCMC_NUM_PHASES = 64
+def _(s6_parameters):
+    RCMC_KERNEL_LENGTH = s6_parameters.RCMC_KERNEL_LENGTH
+    RCMC_NUM_PHASES = s6_parameters.RCMC_PHASES
     return RCMC_KERNEL_LENGTH, RCMC_NUM_PHASES
 
 
@@ -1483,8 +1491,8 @@ def _(mo):
 
 
 @app.cell
-def _():
-    AZIMUTH_TIME_CORRECTION_S = 0.0
+def _(s6_parameters):
+    AZIMUTH_TIME_CORRECTION_S = s6_parameters.AZIMUTH_TIME_CORRECTION_S
     return (AZIMUTH_TIME_CORRECTION_S,)
 
 
@@ -1509,6 +1517,7 @@ def _(
     input_identity,
     mo,
     open_array,
+    output_geometry,
     packet_azimuth_times_s,
     range_cache_file,
     range_sample_freq,
@@ -1538,6 +1547,7 @@ def _(
             src_segment_samples=SRC_SEGMENT_SAMPLES,
             rcmc_kernel_length=RCMC_KERNEL_LENGTH,
             rcmc_phases=RCMC_NUM_PHASES,
+            output_geometry=output_geometry,
         )
         save_array(path, focused)
 
@@ -1565,7 +1575,8 @@ def _(mo):
     mo.md(r"""
     ## 11 - Focused SLC output (DAD §9.12)
 
-    Keep the valid lines from each focused block and write them to the SLC.
+    Giữ các line đủ aperture trên zero-Doppler grid. Đây vẫn là internal SLC;
+    post-processing Hamming, calibration và SAFE formatting chưa được áp dụng.
     """)
     return
 

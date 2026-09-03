@@ -11,6 +11,8 @@ from typing import Callable, Iterable, Literal, Optional, Sequence
 
 import numpy as np
 
+from . import s6_parameters
+
 
 ArrayLike = np.ndarray | Sequence[float]
 GeometryDcProvider = Callable[[float, np.ndarray], np.ndarray]
@@ -62,7 +64,7 @@ class Config:
     polynomial_degree: int = 2
 
     # AUX_PP1 supplied with the project.
-    rms_threshold_hz: float = 20.0
+    rms_threshold_hz: float = s6_parameters.DCE_RMS_ERROR_THRESHOLD_HZ
 
     # DAD says outliers are detected/eliminated in the LS fit, but the exact
     # operational rejection implementation is not exposed in the DAD.
@@ -90,16 +92,16 @@ class Config:
         sizes come from the supplied scene and are not published IPF values.
         """
         return cls(
-            azimuth_block_size_lines=6000,
-            num_range_blocks=20,
-            range_block_size_samples=1000,
-            range_roi_stop=17507,
+            azimuth_block_size_lines=s6_parameters.DCE_AZIMUTH_BLOCK_SIZE_LINES,
+            num_range_blocks=s6_parameters.DCE_RANGE_BLOCKS,
+            range_block_size_samples=s6_parameters.DCE_RANGE_BLOCK_SIZE_SAMPLES,
+            range_roi_stop=s6_parameters.DCE_RANGE_ROI_STOP_SAMPLE,
             azimuth_placement="slice_timeline",
             azimuth_spacing_lines=None,
-            unwrap_fft_length=4096,
+            unwrap_fft_length=s6_parameters.DCE_UNWRAP_FFT_LENGTH,
             polynomial_degree=2,
-            rms_threshold_hz=20.0,
-            outlier_sigma=2.5,
+            rms_threshold_hz=s6_parameters.DCE_RMS_ERROR_THRESHOLD_HZ,
+            outlier_sigma=s6_parameters.DCE_OUTLIER_SIGMA,
             unwrap_weighting="coherence",
             fit_weighting="uniform",
             accc_range_weighting="phase",
@@ -176,8 +178,6 @@ class PreparedScene:
     range_spacing_s: float
     nominal_azimuth_spacing_s: float
     azimuth_gap_tolerance_s: float
-    lanczos_radius: int = 8
-
     @property
     def num_azimuth_lines(self) -> int:
         return int(self.azimuth_times_s.size)
@@ -235,7 +235,6 @@ class PreparedScene:
                     local_start,
                     local_stop,
                     self.num_range_samples,
-                    lanczos_radius=self.lanczos_radius,
                 )
         return output
 
@@ -714,26 +713,20 @@ def prepare_segments(
     segments: Sequence[Segment],
     prf_hz: float,
     *,
-    lanczos_radius: int = 8,
     range_spacing_rtol: float = 1e-6,
     azimuth_gap_tolerance_s: Optional[float] = None,
 ) -> PreparedScene:
     """Align acquisition segments to one slant-range grid.
 
-    The first chronological segment supplies the fixed reference fast-time
-    grid. Each segment is mapped to this grid by a constant fractional sample
-    shift. Sentinel-1 chunks of the same acquisition are expected to use the
-    same range sampling frequency; if not, this routine raises rather than
-    silently resampling a sample-rate change.
+    The common grid covers the union of all segment grids. Segments must
+    already have their fractional SWST offset corrected in the range reference
+    function; this routine applies only exact integer placement and black-fill.
 
     """
     if not segments:
         raise ValueError("segments must not be empty.")
     if prf_hz <= 0:
         raise ValueError("prf_hz must be positive.")
-    if lanczos_radius < 2:
-        raise ValueError("lanczos_radius must be >= 2.")
-
     segs = sorted(segments, key=lambda x: float(np.asarray(x.azimuth_times_s)[0]))
 
     dts = []
@@ -753,8 +746,7 @@ def prepare_segments(
                 "implemented; this API currently handles SWST/grid-offset changes."
             )
 
-    common_tau = np.asarray(segs[0].slant_range_times_s, dtype=np.float64).copy()
-    common_start = float(common_tau[0])
+    common_start = min(float(np.asarray(seg.slant_range_times_s)[0]) for seg in segs)
 
     alignments: list[Alignment] = []
     az_times: list[np.ndarray] = []
@@ -785,13 +777,13 @@ def prepare_segments(
         previous_last_time = float(eta[-1])
 
         x0 = (common_start - float(tau[0])) / dt_i
-        base = int(np.floor(x0 + 1e-12))
+        base = int(np.rint(x0))
         frac = float(x0 - base)
-        if frac < 0 and abs(frac) < 1e-10:
-            frac = 0.0
-        if frac >= 1.0 - 1e-10:
-            base += 1
-            frac = 0.0
+        if abs(frac) > range_spacing_rtol:
+            raise ValueError(
+                f"{seg.name}: fractional SWST offset remains ({frac:.6f} sample); "
+                "apply it as range_time_shift_s during range compression."
+            )
 
         start_line = global_line
         stop_line = start_line + seg.num_azimuth_lines
@@ -803,7 +795,7 @@ def prepare_segments(
                 global_stop_line=stop_line,
                 source_start_index=float(x0),
                 integer_shift_samples=base,
-                fractional_shift_samples=frac,
+                fractional_shift_samples=0.0,
                 source_range_spacing_s=dt_i,
             )
         )
@@ -814,6 +806,12 @@ def prepare_segments(
     if all_eta.size > 1 and np.any(np.diff(all_eta) <= 0):
         raise ValueError("Concatenated segment azimuth times are not strictly increasing.")
 
+    common_length = max(
+        -alignment.integer_shift_samples + alignment.segment.num_range_samples
+        for alignment in alignments
+    )
+    common_tau = common_start + np.arange(common_length, dtype=np.float64) * dt
+
     return PreparedScene(
         alignments=alignments,
         common_slant_range_times_s=common_tau,
@@ -821,21 +819,7 @@ def prepare_segments(
         range_spacing_s=dt,
         nominal_azimuth_spacing_s=nominal_pri,
         azimuth_gap_tolerance_s=gap_tolerance,
-        lanczos_radius=int(lanczos_radius),
     )
-
-
-def _lanczos_fractional_weights(frac: float, radius: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return integer tap offsets and normalized Lanczos-sinc weights."""
-    offsets = np.arange(-radius, radius + 1, dtype=int)
-    d = frac - offsets.astype(np.float64)
-    weights = np.sinc(d) * np.sinc(d / (radius + 1.0))
-    weights[np.abs(d) >= radius + 1.0] = 0.0
-    sw = float(np.sum(weights))
-    if abs(sw) < 1e-15:
-        raise RuntimeError("Degenerate fractional-delay kernel.")
-    weights /= sw
-    return offsets, weights
 
 
 def _align_segment_rows(
@@ -843,8 +827,6 @@ def _align_segment_rows(
     local_start: int,
     local_stop: int,
     n_common: int,
-    *,
-    lanczos_radius: int,
 ) -> np.ndarray:
     """Align a small row batch to the common range grid.
 
@@ -857,32 +839,15 @@ def _align_segment_rows(
         raise ValueError("Segment data slice must remain 2-D.")
 
     base = alignment.integer_shift_samples
-    frac = alignment.fractional_shift_samples
-
     out = np.zeros(
         (src.shape[0], n_common),
         dtype=np.result_type(src.dtype, np.complex128),
     )
 
-    # Integer alignment needs no interpolation and is exact. Samples outside
-    # the native support remain zero and therefore do not contribute to ACCC.
-    if abs(frac) < 1e-12:
-        n0 = max(0, -base)
-        n1 = min(n_common, src.shape[1] - base)
-        if n1 > n0:
-            out[:, n0:n1] = src[:, base + n0:base + n1]
-        return out
-
-    offsets, weights = _lanczos_fractional_weights(frac, lanczos_radius)
-    n0 = max(0, -base - int(offsets[0]))
-    n1 = min(n_common, src.shape[1] - base - int(offsets[-1]))
-    if n1 <= n0:
-        return out
-
-    for m, w in zip(offsets, weights):
-        i0 = base + int(m) + n0
-        i1 = i0 + (n1 - n0)
-        out[:, n0:n1] += w * src[:, i0:i1]
+    n0 = max(0, -base)
+    n1 = min(n_common, src.shape[1] - base)
+    if n1 > n0:
+        out[:, n0:n1] = src[:, base + n0:base + n1]
 
     return out
 
@@ -928,7 +893,6 @@ def _stream_accc_from_segments(
                 b0,
                 b1,
                 nr,
-                lanczos_radius=prepared.lanczos_radius,
             )
 
             if y.shape[0] == 0:
@@ -1344,8 +1308,13 @@ class Estimator:
         *,
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
+        known_ambiguity_number: Optional[int] = None,
     ) -> Estimate:
         """Estimate one DCE record from one range-compressed azimuth block."""
+        if geometry_dc_provider is not None and known_ambiguity_number is not None:
+            raise ValueError(
+                "Supply geometry_dc_provider or known_ambiguity_number, not both."
+            )
         s = np.asarray(range_compressed_block)
 
         if s.ndim != 2:
@@ -1438,7 +1407,15 @@ class Estimator:
         else:
             # Without geometry only the range-unwrapped data DC is known; its
             # absolute PRF ambiguity cannot be guaranteed.
+            ambiguity_number = (
+                None
+                if known_ambiguity_number is None
+                else int(known_ambiguity_number)
+            )
+            ambiguity_resolved = ambiguity_number is not None
             absolute = fine_unwrapped.copy()
+            if ambiguity_number is not None:
+                absolute += ambiguity_number * self.prf_hz
 
             data_poly, valid_mask, rms = fit_polynomial(
                 range_times,
@@ -1477,6 +1454,7 @@ class Estimator:
         azimuth_time_offset_s: float = 0.0,
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
+        known_ambiguity_number: Optional[int] = None,
         custom_azimuth_starts: Optional[Sequence[int]] = None,
         slice_start_times_s: Optional[Sequence[float]] = None,
         last_slice_stop_time_s: Optional[float] = None,
@@ -1515,6 +1493,10 @@ class Estimator:
             Supplying this enables DAD §5.4 absolute ambiguity resolution.
             Without geometry, the returned polynomial is range-unwrapped but
             not guaranteed to have the correct integer-PRF ambiguity.
+
+        known_ambiguity_number:
+            Independently established integer PRF ambiguity, for example from
+            a configured absolute-DC bound. Mutually exclusive with geometry.
         """
         s = np.asarray(range_compressed)
 
@@ -1550,6 +1532,7 @@ class Estimator:
                 rg_blocks,
                 t0_s=t0_s,
                 geometry_dc_provider=geometry_dc_provider,
+                known_ambiguity_number=known_ambiguity_number,
             )
             records.append(record)
 
@@ -1560,14 +1543,12 @@ class Estimator:
         self,
         segments: Sequence[Segment],
         *,
-        lanczos_radius: int = 8,
         azimuth_gap_tolerance_s: Optional[float] = None,
     ) -> PreparedScene:
         """Prepare multiple acquisition chunks with different SWST/range grids."""
         return prepare_segments(
             segments,
             self.prf_hz,
-            lanczos_radius=lanczos_radius,
             azimuth_gap_tolerance_s=azimuth_gap_tolerance_s,
         )
 
@@ -1578,13 +1559,13 @@ class Estimator:
         azimuth_time_offset_s: float = 0.0,
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
+        known_ambiguity_number: Optional[int] = None,
         custom_azimuth_starts: Optional[Sequence[int]] = None,
         slice_start_times_s: Optional[Sequence[float]] = None,
         last_slice_stop_time_s: Optional[float] = None,
         product_start_time_s: Optional[float] = None,
         product_stop_time_s: Optional[float] = None,
         zero_dop_minus_acq_time_s: Optional[float] = None,
-        lanczos_radius: int = 8,
         azimuth_gap_tolerance_s: Optional[float] = None,
         batch_lines: int = 256,
         return_prepared_scene: bool = False,
@@ -1592,18 +1573,24 @@ class Estimator:
         """Estimate DCE over multiple acquisition segments/chunks.
 
         Unlike :meth:`estimate_scene`, the input chunks do not need the same
-        SWST or range-vector length.  They are aligned lazily to a common
-        slant-range grid using a Lanczos-windowed sinc fractional delay.
+        SWST or range-vector length. They are placed lazily on a common
+        slant-range grid after fractional SWST correction during compression.
 
         This is intended for cases such as the supplied S6 acquisition where
         DCE2 crosses the chunk-13/chunk-14 boundary and chunk 14 is displaced
         by about 81.25 range samples relative to chunk 13.
+
+        ``known_ambiguity_number`` may be used when an independent auxiliary
+        bound proves the PRF ambiguity without a geometry polynomial.
         """
         prepared = self.prepare_segments(
             segments,
-            lanczos_radius=lanczos_radius,
             azimuth_gap_tolerance_s=azimuth_gap_tolerance_s,
         )
+        if geometry_dc_provider is not None and known_ambiguity_number is not None:
+            raise ValueError(
+                "Supply geometry_dc_provider or known_ambiguity_number, not both."
+            )
 
         az_blocks = build_azimuth_blocks(
             n_lines=prepared.num_azimuth_lines,
@@ -1699,7 +1686,15 @@ class Estimator:
                 )
                 ambiguity_resolved = True
             else:
+                ambiguity_number = (
+                    None
+                    if known_ambiguity_number is None
+                    else int(known_ambiguity_number)
+                )
+                ambiguity_resolved = ambiguity_number is not None
                 absolute = fine_unwrapped.copy()
+                if ambiguity_number is not None:
+                    absolute += ambiguity_number * self.prf_hz
                 data_poly, valid_mask, rms = fit_polynomial(
                     range_times,
                     absolute,

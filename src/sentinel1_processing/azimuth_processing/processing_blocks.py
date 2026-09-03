@@ -23,6 +23,67 @@ class ProcessingBlockLayout:
     support_probe_samples: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class L1OutputGeometry:
+    """Valid Stripmap SLC extent on the input PRI/range grid."""
+
+    azimuth_start_line: int
+    azimuth_stop_line: int
+    range_start_sample: int
+    range_stop_sample: int
+    first_zero_doppler_time_s: float
+    last_zero_doppler_time_s: float
+
+    @property
+    def shape(self):
+        return (
+            self.azimuth_stop_line - self.azimuth_start_line,
+            self.range_stop_sample - self.range_start_sample,
+        )
+
+    @classmethod
+    def from_focus_support(
+        cls,
+        packet_azimuth_times_s,
+        num_range_samples,
+        layout,
+        *,
+        azimuth_sample_period_s,
+        nominal_dc_time_offset_s=0.0,
+    ):
+        """Build the valid output timeline after azimuth-filter throwaway."""
+        times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
+        if times.ndim != 1 or times.size < 2 or np.any(np.diff(times) <= 0):
+            raise ValueError("packet_azimuth_times_s must be strictly increasing.")
+        pri = float(azimuth_sample_period_s)
+        if pri <= 0:
+            raise ValueError("azimuth_sample_period_s must be positive.")
+        # ponytail: one nominal offset; use range-extreme geometry offsets when
+        # the downlink-quaternion convention is available.
+        shifted_margin = (
+            layout.overlap_samples / 2 + nominal_dc_time_offset_s / pri
+        )
+        start = max(0, int(np.ceil(shifted_margin)))
+        stop = min(
+            times.size,
+            int(np.floor(
+                times.size
+                - layout.overlap_samples / 2
+                + nominal_dc_time_offset_s / pri
+            )),
+        )
+        if stop <= start:
+            raise ValueError("Azimuth support leaves no valid output lines.")
+        return cls(
+            start,
+            stop,
+            0,
+            int(num_range_samples),
+            float(times[0] + start * pri),
+            float(times[0] + (stop - 1) * pri),
+        )
+
+
 def calculate_layout(
     num_azimuth_lines,
     slant_ranges_m,
@@ -151,15 +212,38 @@ def focus_slc(
     src_segment_samples=1024,
     rcmc_kernel_length=16,
     rcmc_phases=64,
+    output_geometry=None,
     output=None,
 ):
     """Focus Stripmap blocks and assemble the SLC."""
+    geometry = output_geometry or L1OutputGeometry(
+        0,
+        range_compressed.shape[0],
+        0,
+        range_compressed.shape[1],
+        float(packet_azimuth_times_s[0]),
+        float(packet_azimuth_times_s[-1]),
+    )
+    valid_azimuth = (
+        0
+        <= geometry.azimuth_start_line
+        < geometry.azimuth_stop_line
+        <= range_compressed.shape[0]
+    )
+    valid_range = (
+        0
+        <= geometry.range_start_sample
+        < geometry.range_stop_sample
+        <= range_compressed.shape[1]
+    )
+    if not (valid_azimuth and valid_range):
+        raise ValueError("output_geometry lies outside the range-compressed input.")
     if output is None:
-        focused_image = np.zeros_like(range_compressed, dtype=np.complex64)
+        focused_image = np.zeros(geometry.shape, dtype=np.complex64)
     else:
-        if output.shape != range_compressed.shape:
+        if output.shape != geometry.shape:
             raise ValueError(
-                "output shape must match the range-compressed input shape."
+                f"output shape must match output_geometry shape {geometry.shape}."
             )
         if not np.issubdtype(output.dtype, np.complexfloating):
             raise ValueError("output must have a complex dtype.")
@@ -203,7 +287,15 @@ def focus_slc(
         last = start + real_length >= range_compressed.shape[0]
         keep0 = 0 if first else left_throw
         keep1 = real_length if last else fft_length - right_throw
-        focused_image[start + keep0:start + keep1] = focused_block[keep0:keep1]
+        global0 = max(start + keep0, geometry.azimuth_start_line)
+        global1 = min(start + keep1, geometry.azimuth_stop_line)
+        if global1 > global0:
+            r0 = geometry.range_start_sample
+            r1 = geometry.range_stop_sample
+            focused_image[
+                global0 - geometry.azimuth_start_line:
+                global1 - geometry.azimuth_start_line
+            ] = focused_block[global0 - start:global1 - start, r0:r1]
         if last:
             break
 
@@ -212,6 +304,7 @@ def focus_slc(
 
 __all__ = [
     "ProcessingBlockLayout",
+    "L1OutputGeometry",
     "calculate_layout",
     "focus_block",
     "focus_slc",

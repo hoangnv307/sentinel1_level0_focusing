@@ -1,7 +1,7 @@
 """Range Compression from DAD Section 6.2.2."""
 
 import numpy as np
-from scipy.fft import fft, ifft
+from scipy.fft import fft, fftfreq, ifft
 
 from ...range_processing import reference_function
 
@@ -69,6 +69,7 @@ def compress(
     output="valid",
     iq_bias=0.0j,
     range_reference_function=None,
+    range_time_shift_s=0.0,
     output_array=None,
 ):
     """Run the Range Compression steps from DAD Section 6.2.2."""
@@ -86,6 +87,13 @@ def compress(
         if range_reference_function is None
         else np.asarray(range_reference_function, dtype=np.complex64)
     )
+    time_shift = float(range_time_shift_s)
+    if abs(time_shift) > 0.5 / sample_rate_hz:
+        raise ValueError("range_time_shift_s must not exceed half a range sample.")
+    if time_shift:
+        reference = reference * np.exp(
+            2.0j * np.pi * fftfreq(fft_length, d=1.0 / sample_rate_hz) * time_shift
+        )
     output_length = n_range - num_tx_samples + 1 if output == "valid" else n_range
     expected_shape = (n_azimuth, output_length)
     if output_array is None:
@@ -107,7 +115,10 @@ def compress(
         multiply_reference_function(spectrum, reference)
         filtered = inverse_fft(spectrum)
         compressed[start:stop], output_times = extract_valid_samples(
-            filtered, raw_slant_range_times_s, num_tx_samples, output
+            filtered,
+            np.asarray(raw_slant_range_times_s) + time_shift,
+            num_tx_samples,
+            output,
         )
 
     return compressed, output_times

@@ -56,6 +56,52 @@ class ProcessingTest(unittest.TestCase):
         self.assertIs(result, output)
         np.testing.assert_array_equal(output, np.ones_like(output))
 
+    def test_focus_slc_crops_invalid_azimuth_support(self):
+        source = np.zeros((8, 3), dtype=np.complex64)
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=1,
+            overlap_samples=2,
+            step_samples=2,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(1,),
+        )
+        geometry = (
+            azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+                np.arange(8.0), 3, layout, azimuth_sample_period_s=1.0
+            )
+        )
+        output = np.empty(geometry.shape, dtype=np.complex64)
+        velocity = SimpleNamespace(evaluate_block=lambda **_kwargs: np.ones(3))
+
+        with patch.object(
+            azimuth_processing.processing_blocks,
+            "focus_block",
+            return_value=np.ones((4, 3), dtype=np.complex64),
+        ):
+            result = azimuth_processing.processing_blocks.focus_slc(
+                source,
+                np.arange(3.0) + 1.0,
+                np.arange(8.0),
+                lambda _line: np.zeros(3),
+                velocity,
+                layout,
+                wavelength_m=1.0,
+                speed_of_light_mps=1.0,
+                azimuth_sample_period_s=1.0,
+                range_sample_period_s=1.0,
+                range_sample_frequency_hz=1.0,
+                processing_bandwidth_hz=1.0,
+                fft_length=4,
+                output_geometry=geometry,
+                output=output,
+            )
+
+        self.assertEqual(geometry.shape, (6, 3))
+        self.assertEqual(geometry.first_zero_doppler_time_s, 1.0)
+        self.assertEqual(geometry.last_zero_doppler_time_s, 6.0)
+        self.assertIs(result, output)
+        np.testing.assert_array_equal(output, np.ones_like(output))
+
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
             np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
@@ -72,15 +118,26 @@ class ProcessingTest(unittest.TestCase):
         prepared = doppler_centroid_estimation.prepare_segments(
             [first, second], prf_hz=1.0
         )
-        output = np.empty((4, 4), dtype=np.complex64)
+        output = np.empty((4, 5), dtype=np.complex64)
 
         result = prepared.align_into(output, batch_lines=1)
 
         self.assertIs(result, output)
         np.testing.assert_array_equal(
             output,
-            [[1, 2, 3, 4], [5, 6, 7, 8], [0, 9, 10, 11], [0, 13, 14, 15]],
+            [[1, 2, 3, 4, 0], [5, 6, 7, 8, 0], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16]],
         )
+
+        fractional = doppler_centroid_estimation.Segment(
+            np.ones((1, 2), dtype=np.complex64),
+            np.array([0.25, 1.25]),
+            np.array([4.0]),
+            name="fractional",
+        )
+        with self.assertRaisesRegex(ValueError, "range_time_shift_s"):
+            doppler_centroid_estimation.prepare_segments(
+                [first, fractional], prf_hz=1.0
+            )
 
     def test_dce_fit_ignores_zero_quality_points(self):
         coefficients, valid, _ = doppler_centroid_estimation.fit_polynomial(
@@ -273,6 +330,18 @@ class ProcessingTest(unittest.TestCase):
         self.assertIs(supplied_result, supplied_output)
         np.testing.assert_allclose(supplied_result, result, rtol=2e-6, atol=2e-6)
 
+        shifted, shifted_times = azimuth_pre_processing.range.compression.compress(
+            data,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            range_time_shift_s=-0.125,
+        )
+        np.testing.assert_array_equal(shifted_times, times[:13] - 0.125)
+        self.assertFalse(np.allclose(shifted, result))
+
         same_result, same_times = azimuth_pre_processing.range.compression.compress(
             data,
             times,
@@ -339,6 +408,47 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_allclose(
             np.polynomial.polynomial.polyval([0.0, 1.0, 2.0], coefficients),
             absolute,
+        )
+
+    def test_dce_accepts_independently_known_ambiguity(self):
+        estimator = doppler_centroid_estimation.Estimator(
+            1000.0,
+            doppler_centroid_estimation.Config(
+                azimuth_block_size_lines=2,
+                num_range_blocks=3,
+                polynomial_degree=1,
+                azimuth_spacing_lines=2,
+                fit_weighting="uniform",
+            ),
+        )
+        block = doppler_centroid_estimation.AzimuthBlock(
+            0, 2, 1.0, 0.0, 2.0, 1.0
+        )
+        range_blocks = [
+            doppler_centroid_estimation.RangeBlock(i, i + 1, i + 0.5, float(i))
+            for i in range(3)
+        ]
+        with patch.object(
+            doppler_centroid_estimation,
+            "estimate_fine_dc",
+            return_value=(
+                np.array([10.0, 20.0, 30.0]),
+                np.ones(3, dtype=np.complex128),
+                np.ones(3),
+            ),
+        ):
+            result = estimator.estimate_block(
+                np.ones((2, 3), dtype=np.complex64),
+                block,
+                range_blocks,
+                known_ambiguity_number=2,
+            )
+
+        self.assertTrue(result.absolute_ambiguity_resolved)
+        self.assertEqual(result.ambiguity_number, 2)
+        self.assertIsNone(result.geometry_dc_polynomial)
+        np.testing.assert_allclose(
+            result.fine_absolute_hz - result.fine_unwrapped_hz, 2000.0
         )
 
     def test_positive_azimuth_filter_focuses_point_target(self):

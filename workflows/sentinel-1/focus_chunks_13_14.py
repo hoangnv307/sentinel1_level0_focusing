@@ -61,6 +61,7 @@ def _(Path):
     import sentinel1_processing.effective_velocity as effective_velocity
     import sentinel1_processing.range_processing as range_processing
     import sentinel1_processing.raw_data_correction as raw_data_correction
+    import sentinel1_processing.s6_parameters as s6_parameters
 
     _range_roots = (
         Path(azimuth_pre_processing.__file__).parent,
@@ -70,14 +71,23 @@ def _(Path):
         _path.read_bytes()
         for _root in dict.fromkeys(_range_roots)
         for _path in sorted(_root.rglob("*.py"))
-    ) + (Path(raw_data_correction.__file__).read_bytes(),)
-    doppler_source = Path(doppler_centroid_estimation.__file__).read_bytes()
+    ) + (
+        Path(raw_data_correction.__file__).read_bytes(),
+        Path(s6_parameters.__file__).read_bytes(),
+    )
+    doppler_source = (
+        Path(doppler_centroid_estimation.__file__).read_bytes(),
+        Path(s6_parameters.__file__).read_bytes(),
+    )
     _focus_roots = (Path(azimuth_processing.__file__).parent,)
     focus_source = tuple(
         _path.read_bytes()
         for _root in _focus_roots
         for _path in sorted(_root.rglob("*.py"))
-    ) + (Path(effective_velocity.__file__).read_bytes(),)
+    ) + (
+        Path(effective_velocity.__file__).read_bytes(),
+        Path(s6_parameters.__file__).read_bytes(),
+    )
     return (
         azimuth_pre_processing,
         azimuth_processing,
@@ -88,6 +98,7 @@ def _(Path):
         range_processing,
         range_source,
         raw_data_correction,
+        s6_parameters,
     )
 
 
@@ -120,13 +131,13 @@ def _(PROJECT_ROOT, mo, sentinel1decoder):
 
 
 @app.cell
-def _(l0file, sentinel1decoder):
+def _(l0file, s6_parameters, sentinel1decoder):
     CHUNKS = (13, 14)
     metadata_13 = l0file.get_acquisition_chunk_metadata(CHUNKS[0])
     metadata_14 = l0file.get_acquisition_chunk_metadata(CHUNKS[1])
 
     c = sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
-    wavelength_m = sentinel1decoder.constants.TX_WAVELENGTH_M
+    wavelength_m = s6_parameters.RADAR_WAVELENGTH_M
     PRI = float(metadata_13["PRI"].iloc[0])
     RGDEC = metadata_13["Range Decimation"].iloc[0]
     TXPSF = float(metadata_13["Tx Pulse Start Frequency"].iloc[0])
@@ -161,9 +172,10 @@ def _(
     np,
     range_processing,
     range_sample_freq,
+    s6_parameters,
     suppressed_data_time,
 ):
-    SWST_BIAS_S = -8.2256909e-09
+    SWST_BIAS_S = s6_parameters.SWST_BIAS_S
 
     def _axes(metadata):
         _count = 2 * int(metadata["Number of Quads"].iloc[0])
@@ -182,12 +194,22 @@ def _(
 
     raw_tau_13, eta_13, raw_range_count_13 = _axes(metadata_13)
     raw_tau_14, eta_14, raw_range_count_14 = _axes(metadata_14)
+    _common_start = min(raw_tau_13[0], raw_tau_14[0])
+
+    def _fractional_shift(tau):
+        _offset = (tau[0] - _common_start) * range_sample_freq
+        return (round(_offset) - _offset) / range_sample_freq
+
+    range_time_shift_13 = _fractional_shift(raw_tau_13)
+    range_time_shift_14 = _fractional_shift(raw_tau_14)
     return (
         SWST_BIAS_S,
         eta_13,
         eta_14,
         raw_range_count_13,
         raw_range_count_14,
+        range_time_shift_13,
+        range_time_shift_14,
         raw_tau_13,
         raw_tau_14,
     )
@@ -232,7 +254,7 @@ def _(
     raw_data_correction,
     transmitted_pulse_samples,
 ):
-    def compress_chunk_to_file(chunk, raw_tau, destination):
+    def compress_chunk_to_file(chunk, raw_tau, range_time_shift_s, destination):
         _radar_data = l0file.get_acquisition_chunk_data(chunk)
         _iq_bias = np.complex128(
             raw_data_correction.estimate_iq_bias(_radar_data)
@@ -257,6 +279,7 @@ def _(
                 pulse_length_s=TXPL,
                 iq_bias=_iq_bias,
                 range_reference_function=range_reference_function,
+                range_time_shift_s=range_time_shift_s,
                 output_array=_output,
             )
         )
@@ -284,6 +307,7 @@ def _(
     mo,
     open_array,
     range_source,
+    range_time_shift_13,
     raw_tau_13,
 ):
     with mo.persistent_cache(
@@ -291,7 +315,9 @@ def _(
     ):
         input_identity, range_source
         range_cache_13 = f"{CACHE_ROOT}/range-compression-13/data.npy"
-        tau_13, iq_bias_13 = compress_chunk_to_file(13, raw_tau_13, range_cache_13)
+        tau_13, iq_bias_13 = compress_chunk_to_file(
+            13, raw_tau_13, range_time_shift_13, range_cache_13
+        )
     range_compressed_13 = open_array(range_cache_13)
     return iq_bias_13, range_cache_13, range_compressed_13, tau_13
 
@@ -304,6 +330,7 @@ def _(
     mo,
     open_array,
     range_source,
+    range_time_shift_14,
     raw_tau_14,
 ):
     with mo.persistent_cache(
@@ -311,7 +338,9 @@ def _(
     ):
         input_identity, range_source
         range_cache_14 = f"{CACHE_ROOT}/range-compression-14/data.npy"
-        tau_14, iq_bias_14 = compress_chunk_to_file(14, raw_tau_14, range_cache_14)
+        tau_14, iq_bias_14 = compress_chunk_to_file(
+            14, raw_tau_14, range_time_shift_14, range_cache_14
+        )
     range_compressed_14 = open_array(range_cache_14)
     return iq_bias_14, range_cache_14, range_compressed_14, tau_14
 
@@ -321,8 +350,8 @@ def _(mo):
     mo.md(r"""
     ## 3 - Căn lưới range và ghép dải azimuth
 
-    Chunk 14 có SWST khác chunk 13 nên không thể nối trực tiếp theo hàng.
-    Phép căn chỉnh dưới đây giữ lưới range của chunk 13 làm lưới chung.
+    Phần lẻ SWST đã được sửa bằng phase ramp trong RRF. Phần nguyên được
+    đặt vào lưới range hợp của hai chunk bằng black-fill, không nội suy lại ảnh.
     """)
     return
 
@@ -417,9 +446,8 @@ def _(
     input_identity,
     make_segments,
     mo,
+    s6_parameters,
 ):
-    ZERO_DOPPLER_MINUS_ACQ_TIME_S = 0.386295160
-    DOPPLER_CENTROID_T0_S = 6.095910535477454e-03
     doppler_estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
         prf_hz=az_sample_freq
     )
@@ -430,12 +458,12 @@ def _(
         _stop = float(_segments[-1].azimuth_times_s[-1] + PRI)
         _estimates = doppler_estimator.estimate_segments(
             _segments,
-            t0_s=DOPPLER_CENTROID_T0_S,
+            known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
             slice_start_times_s=[_start],
             last_slice_stop_time_s=_stop,
-            product_start_time_s=_start + ZERO_DOPPLER_MINUS_ACQ_TIME_S,
-            product_stop_time_s=_stop + ZERO_DOPPLER_MINUS_ACQ_TIME_S,
-            zero_dop_minus_acq_time_s=ZERO_DOPPLER_MINUS_ACQ_TIME_S,
+            product_start_time_s=_start,
+            product_stop_time_s=_stop,
+            zero_dop_minus_acq_time_s=0.0,
         )
         return _estimates
 
@@ -444,12 +472,11 @@ def _(
     ):
         input_identity, doppler_source
         doppler_estimates = _estimate_doppler()
-    return ZERO_DOPPLER_MINUS_ACQ_TIME_S, doppler_estimator, doppler_estimates
+    return doppler_estimator, doppler_estimates
 
 
 @app.cell
 def _(
-    ZERO_DOPPLER_MINUS_ACQ_TIME_S,
     combined_eta,
     common_tau,
     doppler_estimator,
@@ -464,7 +491,6 @@ def _(
             line_index=line_index,
             azimuth_times_s=combined_eta,
             slant_range_times_s=common_tau,
-            azimuth_time_offset_s=ZERO_DOPPLER_MINUS_ACQ_TIME_S,
         )
 
     velocity_estimator = effective_velocity.Estimator.from_level0_product(
@@ -481,6 +507,9 @@ def _(
 def _(mo):
     mo.md(r"""
     ## 5 - Focus toàn bộ chunk 13–14
+
+    Kết quả là internal SLC trên support hợp lệ; chưa áp dụng post-processing,
+    calibration và SAFE formatting của Level-1.
     """)
     return
 
@@ -493,11 +522,12 @@ def _(
     combined_eta,
     common_tau,
     doppler_centroid_for_line,
+    s6_parameters,
     velocity_estimator,
     wavelength_m,
 ):
-    FOCUS_FFT_LEN = 4096
-    AZIMUTH_PROCESSING_BANDWIDTH_HZ = 1398.0
+    FOCUS_FFT_LEN = s6_parameters.FOCUS_FFT_LENGTH
+    AZIMUTH_PROCESSING_BANDWIDTH_HZ = s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ
     slant_ranges_m = common_tau * c / 2.0
     focus_layout = azimuth_processing.processing_blocks.calculate_layout(
         len(combined_eta),
@@ -509,12 +539,19 @@ def _(
         azimuth_sample_frequency_hz=az_sample_freq,
         processing_bandwidth_hz=AZIMUTH_PROCESSING_BANDWIDTH_HZ,
         fft_length=FOCUS_FFT_LEN,
-        extra_overlap_samples=50,
+        extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
+    )
+    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+        combined_eta,
+        len(slant_ranges_m),
+        focus_layout,
+        azimuth_sample_period_s=1.0 / az_sample_freq,
     )
     return (
         AZIMUTH_PROCESSING_BANDWIDTH_HZ,
         FOCUS_FFT_LEN,
         focus_layout,
+        output_geometry,
         slant_ranges_m,
     )
 
@@ -538,8 +575,10 @@ def _(
     mo,
     np,
     open_array,
+    output_geometry,
     range_sample_freq,
     range_sample_period,
+    s6_parameters,
     slant_ranges_m,
     velocity_estimator,
     wavelength_m,
@@ -550,7 +589,10 @@ def _(
         _path.parent.mkdir(parents=True, exist_ok=True)
         _temporary = _path.with_suffix(f"{_path.suffix}.tmp")
         _output = np.lib.format.open_memmap(
-            _temporary, mode="w+", dtype=np.complex64, shape=_source.shape
+            _temporary,
+            mode="w+",
+            dtype=np.complex64,
+            shape=output_geometry.shape,
         )
         azimuth_processing.processing_blocks.focus_slc(
             _source,
@@ -567,9 +609,10 @@ def _(
             processing_bandwidth_hz=AZIMUTH_PROCESSING_BANDWIDTH_HZ,
             fft_length=FOCUS_FFT_LEN,
             azimuth_time_correction_s=0.0,
-            src_segment_samples=1024,
-            rcmc_kernel_length=16,
-            rcmc_phases=64,
+            src_segment_samples=s6_parameters.SRC_SEGMENT_SAMPLES,
+            rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
+            rcmc_phases=s6_parameters.RCMC_PHASES,
+            output_geometry=output_geometry,
             output=_output,
         )
         _output.flush()
