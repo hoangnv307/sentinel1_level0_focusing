@@ -5,8 +5,8 @@ Sentinel-1 Level-0 → focused SLC (Stripmap/S6) processing demo, derived from
 
 ## Overview
 
-The repo is a **marimo notebook** rendered as a Python file
-(`sentinel1_level_1_decoder.py`), backed by a package of pure-processing modules
+The repo contains **marimo notebooks** rendered as Python files under
+`workflows/sentinel-1/`, backed by pure-processing modules
 under `src/sentinel1_processing/`. The notebook decodes raw Level-0 I/Q data,
 corrects I/Q bias, range-compresses, estimates Doppler centroid, and focuses an
 SLC image. Expensive stages are cached by `mo.persistent_cache`.
@@ -16,19 +16,20 @@ All user-facing docs/commits are in Vietnamese.
 ## Commands
 
 - **Install**: `pip install -r requirements-lock.txt && pip install -e . --no-deps`
-- **Open notebook**: `marimo edit sentinel1_level_1_decoder.py`
+- **Open notebook**: `marimo edit workflows/sentinel-1/focus_chunk_13.py`
 - **Run tests** (unittest — pytest is *not* installed):
   ```bash
   MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python -m unittest discover -s test -p "test_*.py"
   ```
   (`MPLBACKEND=Agg` is required on headless boxes; a plain run errors with a
   Tk "couldn't connect to display" — an environment issue, not a code failure.)
-- **Check syntax** of notebook: `python -c "import ast; ast.parse(open('sentinel1_level_1_decoder.py').read())"`
+- **Check notebooks**: `marimo check workflows/sentinel-1/*.py`
 - The project interpreter lives at `/home/xiaoxin/python_envs/sentinel1/bin/python` (repo is not under that env's site-packages path).
 
 ## Layout
 
-- `sentinel1_level_1_decoder.py` — the marimo notebook source (cells as `@app.cell`).
+- `workflows/sentinel-1/` — Sentinel-1 marimo workflows (cells as `@app.cell`).
+- `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
 - `src/sentinel1_processing/` — pure processing package:
   - `raw_data_correction.py` — I/Q bias estimation.
   - `range_processing/` — `reference_function`, `swst_bias`, `dependent_gain`.
@@ -41,8 +42,8 @@ All user-facing docs/commits are in Vietnamese.
   - `doppler_centroid_estimation.py` (~2k lines) — Doppler centroid estimation.
   - `effective_velocity.py` — effective velocity model.
   - `dce_plotting.py` — DCE diagnostic plots.
-- `src/utils/cache.py` — `prune_old_entries()` helper, prunes stale `persistent_cache` pickles.
-- `test/` — unittest suite (test_processing.py, test_cache.py, test_precise_effective_velocity.py, dce_diagnostics.py).
+- `src/notebook_support/cache.py` — large-array storage and stale-cache cleanup helpers.
+- `test/` — unittest suite for Sentinel-1, RADARSAT-1, cache, and effective velocity.
 - `data/`, `output/` — raw input / produced output (gitignored, see `.gitignore`).
 - `.cache/sentinel1/` — marimo persistent cache (gitignored).
 
@@ -83,6 +84,6 @@ All user-facing docs/commits are in Vietnamese.
 
 ## Testing expectations
 
-- Tests use `unittest` classes (not pytest fixtures). 9 tests total, currently passing
+- Tests use `unittest` classes (not pytest fixtures). 17 tests total, currently passing
   with `MPLBACKEND=Agg`.
 - New pure-processing functions should get a `test_*` unittest; keep `np.testing.assert_*` for array comparisons.

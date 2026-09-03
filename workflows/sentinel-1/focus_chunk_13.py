@@ -58,7 +58,7 @@ def _():
     import sys
     from time import perf_counter
 
-    PROJECT_ROOT = Path(__file__).resolve().parent
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
     import numpy as np
@@ -186,7 +186,7 @@ def _(np):
 
 @app.cell
 def _():
-    from utils.cache import open_array, prune_old_entries, save_array
+    from notebook_support.cache import open_array, prune_old_entries, save_array
 
     return open_array, prune_old_entries, save_array
 
@@ -1620,24 +1620,6 @@ def _(mo):
     mo.md(r"""
     ### 12.2 - Full SLC image
     """)
-    return
-
-
-@app.cell
-def _():
-    # plt.figure(figsize=(12, 12))
-    # plt.title("Sentinel-1 Processed SAR Image")
-    # plt.imshow(
-    #     np.abs(focused_image[::20, ::20]),
-    #     origin="lower",
-    #     norm=colors.LogNorm(
-    #         vmin=300 / display_amplitude_scale,
-    #         vmax=10000 / display_amplitude_scale,
-    #     ),
-    # )
-    # plt.xlabel("Down Range (samples)")
-    # plt.ylabel("Cross Range (samples)")
-    # plt.show()
     return
 
 

@@ -15,7 +15,8 @@ pip install -e . --no-deps
 Notebook dùng **marimo** và được lưu dưới dạng file Python:
 
 ```bash
-marimo edit sentinel1_level_1_decoder.py
+marimo edit workflows/sentinel-1/focus_chunk_13.py
+marimo edit workflows/sentinel-1/focus_chunks_13_14.py
 ```
 
 Marimo tự chạy cell theo quan hệ phụ thuộc và lưu các kết quả tốn thời gian
@@ -50,13 +51,13 @@ cũ sau khi Focus hoàn tất để thư mục cache không tăng mãi.
 Giải mã một cửa sổ CEOS thành I/Q `complex64`:
 
 ```bash
-/home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_level0_decoder.py
+/home/xiaoxin/python_envs/sentinel1/bin/python workflows/radarsat-1/decode_level0.py
 ```
 
 Chạy thêm Chirp Scaling Algorithm và ghi ảnh xem nhanh:
 
 ```bash
-/home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_level0_decoder.py --focus
+/home/xiaoxin/python_envs/sentinel1/bin/python workflows/radarsat-1/decode_level0.py --focus
 ```
 
 Mặc định script đọc file `.raw` duy nhất dưới `data/radarsat-1`, lấy 1.536 dòng
@@ -66,8 +67,23 @@ x 2.048 mẫu range và ghi kết quả vào `output/`. Dùng `--help` để ch�
 CRT polynomial trong metadata L1:
 
 ```bash
-MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python radarsat1_doppler_centroid.py
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/radarsat-1/estimate_doppler_centroid.py
 ```
+
+Trích xuất metadata CEOS leader thành JSON:
+
+```bash
+/home/xiaoxin/python_envs/sentinel1/bin/python workflows/radarsat-1/extract_leader.py <file.ldr>
+```
+
+## Cấu trúc dự án
+
+- `workflows/sentinel-1/`: các quy trình focus Sentinel-1 bằng marimo.
+- `workflows/radarsat-1/`: các lệnh xử lý và focus RADARSAT-1.
+- `src/`: thuật toán xử lý và tiện ích dùng lại.
+- `test/`: kiểm thử tự động.
+- `references/`: tài liệu và metadata tham chiếu.
+- `data/`, `output/`, `.cache/`: dữ liệu vào, kết quả và cache cục bộ; không commit.
 
 ## Quy tắc khi sửa notebook
 

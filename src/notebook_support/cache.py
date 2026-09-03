@@ -1,4 +1,4 @@
-"""Small cleanup helper for marimo's persistent cache."""
+"""Hỗ trợ lưu mảng lớn và dọn cache cho notebook marimo."""
 
 from pathlib import Path
 

@@ -28,7 +28,7 @@ def _():
     import sys
     from time import perf_counter
 
-    PROJECT_ROOT = Path(__file__).resolve().parent
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
     import matplotlib.pyplot as plt
@@ -36,7 +36,7 @@ def _():
     import numpy as np
     import sentinel1decoder
 
-    from utils.cache import open_array
+    from notebook_support.cache import open_array
 
     notebook_started_at = perf_counter()
     plt.style.use("default")

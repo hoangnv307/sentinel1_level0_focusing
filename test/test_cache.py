@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from utils.cache import open_array, prune_old_entries, save_array
+from notebook_support.cache import open_array, prune_old_entries, save_array
 
 
 class CacheTest(unittest.TestCase):
