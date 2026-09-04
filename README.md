@@ -15,7 +15,7 @@ pip install -e . --no-deps
 Notebook dùng **marimo** và được lưu dưới dạng file Python:
 
 ```bash
-marimo edit workflows/sentinel-1/focus_chunk_13.py
+marimo edit workflows/sentinel-1/focus_selected_chunk.py
 marimo edit workflows/sentinel-1/focus_chunks_13_14.py
 ```
 

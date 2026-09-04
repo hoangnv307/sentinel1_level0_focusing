@@ -16,7 +16,7 @@ All user-facing docs/commits are in Vietnamese.
 ## Commands
 
 - **Install**: `pip install -r requirements-lock.txt && pip install -e . --no-deps`
-- **Open notebook**: `marimo edit workflows/sentinel-1/focus_chunk_13.py`
+- **Open notebook**: `marimo edit workflows/sentinel-1/focus_selected_chunk.py`
 - **Run tests** (unittest — pytest is *not* installed):
   ```bash
   MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python -m unittest discover -s test -p "test_*.py"

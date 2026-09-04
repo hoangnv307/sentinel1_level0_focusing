@@ -5,7 +5,15 @@ import unittest
 
 import numpy as np
 
-from notebook_support.cache import open_array, prune_old_entries, save_array
+from notebook_support.cache import (
+    array_cache_matches,
+    cache_fingerprint,
+    invalidate_broken_array_cache,
+    open_array,
+    prune_old_entries,
+    save_cache_fingerprint,
+    save_array,
+)
 
 
 class CacheTest(unittest.TestCase):
@@ -35,6 +43,46 @@ class CacheTest(unittest.TestCase):
             self.assertEqual(prune_old_entries(root), 1)
             self.assertFalse(old.exists())
             self.assertEqual(newest.read_bytes(), b"new")
+
+    def test_invalid_array_removes_persistent_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            stage = Path(temporary_directory)
+            metadata = stage / "value.pickle"
+            metadata.write_bytes(b"cached")
+
+            self.assertEqual(
+                invalidate_broken_array_cache(
+                    stage, stage / "missing.npy", expected_shape=(3, 4)
+                ),
+                1,
+            )
+            self.assertFalse(metadata.exists())
+
+            broken = stage / "broken.npy"
+            broken.write_bytes(b"not a numpy array")
+            metadata.write_bytes(b"cached")
+            self.assertEqual(
+                invalidate_broken_array_cache(stage, broken),
+                1,
+            )
+            self.assertFalse(metadata.exists())
+
+    def test_array_cache_requires_matching_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            stage = Path(temporary_directory)
+            array = stage / "data.npy"
+            save_array(array, np.zeros((2, 3), dtype=np.complex64))
+            fingerprint = cache_fingerprint("input", 1)
+            save_cache_fingerprint(stage, fingerprint)
+
+            self.assertTrue(
+                array_cache_matches(stage, array, fingerprint, (2, 3))
+            )
+            self.assertFalse(
+                array_cache_matches(
+                    stage, array, cache_fingerprint("input", 2), (2, 3)
+                )
+            )
 
 
 if __name__ == "__main__":

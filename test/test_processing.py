@@ -102,6 +102,39 @@ class ProcessingTest(unittest.TestCase):
         self.assertIs(result, output)
         np.testing.assert_array_equal(output, np.ones_like(output))
 
+    def test_output_geometry_an_chors_zero_doppler_slice_to_pri(self):
+        # DAD §8.3.1: pass zero-Doppler first/last output times so the SLC slice
+        # is laid on the PRI grid instead of only the symmetric aperture margin.
+        n = 64
+        pri = 0.5
+        times = np.arange(n, dtype=np.float64) * pri
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=1,
+            overlap_samples=10,
+            step_samples=10,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(1,),
+        )
+        # Anchor deliberately sits off-grid (+0.25 PTI) to prove sub-PRI goals
+        # snap to whole lines.
+        required_first = times[8] + 0.25 * pri
+        required_last = times[55] + 0.25 * pri
+        geometry = (
+            azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+                times,
+                3,
+                layout,
+                azimuth_sample_period_s=pri,
+                required_first_time_s=required_first,
+                required_last_time_s=required_last,
+            )
+        )
+        self.assertEqual(geometry.azimuth_start_line, 8)
+        self.assertEqual(geometry.azimuth_stop_line, 56)
+        self.assertEqual(geometry.shape[0], 56 - 8)
+        self.assertEqual(geometry.first_zero_doppler_time_s, times[8])
+        self.assertEqual(geometry.last_zero_doppler_time_s, times[55])
+
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
             np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
@@ -390,6 +423,57 @@ class ProcessingTest(unittest.TestCase):
             range_processing.swst_bias.correct([1.0, 2.0], 0.25),
             [0.75, 1.75],
         )
+
+    def test_fractional_shift_direction_is_a_delay(self):
+        # DAD §6.1.3: fractional SWST is realised as a phase ramp in the RRF.
+        # A positive ``range_time_shift_s`` must DELAY the echoed content (the
+        # compressed peak moves later in time), matching the Fourier convention
+        # used to place each chunk on the common fast-time grid after black-fill.
+        fs = 64.0
+        num_tx = int(np.ceil(0.25 * fs))
+        tx_time = np.arange(num_tx) / fs - (num_tx - 1) / (2.0 * fs)
+        replica = np.exp(
+            2j * np.pi * (8.0 * tx_time + 48.0 / 2.0 * tx_time**2)
+        )
+        n_range = 2048
+        times = np.arange(n_range, dtype=np.float64) / fs
+        data = np.zeros((1, n_range), dtype=np.complex64)
+        data[0, 300:300 + num_tx] = replica
+        reference = range_processing.reference_function.calculate(
+            sample_rate_hz=fs,
+            pulse_start_frequency_hz=8.0,
+            pulse_ramp_rate_hz_per_s=48.0,
+            pulse_length_s=0.25,
+            fft_length=4096,
+        )
+        half_sample = 0.5 / fs
+
+        def peak_time(shift_s):
+            compressed, compressed_times = (
+                azimuth_pre_processing.range.compression.compress(
+                    data,
+                    times,
+                    sample_rate_hz=fs,
+                    pulse_start_frequency_hz=8.0,
+                    pulse_ramp_rate_hz_per_s=48.0,
+                    pulse_length_s=0.25,
+                    batch_lines=1,
+                    range_reference_function=reference,
+                    range_time_shift_s=shift_s,
+                )
+            )
+            peak_index = int(np.argmax(np.abs(compressed[0])))
+            return float(compressed_times[peak_index])
+
+        base = peak_time(0.0)
+        delayed = peak_time(0.5 * half_sample)
+        advanced = peak_time(-0.5 * half_sample)
+        # Positive shift delays the content, a half-sample shift must move the
+        # peak by approximately that amount.
+        self.assertGreater(delayed, base)
+        self.assertLess(advanced, base)
+        self.assertAlmostEqual(delayed - base, 0.5 / fs, delta=0.5 / fs * 0.5)
+        self.assertAlmostEqual(base - advanced, 0.5 / fs, delta=0.5 / fs * 0.5)
 
     def test_absolute_dce_uses_first_geometry_range_block(self):
         absolute, coefficients, _, ambiguity, _, _ = (

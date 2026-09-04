@@ -50,8 +50,18 @@ class L1OutputGeometry:
         *,
         azimuth_sample_period_s,
         nominal_dc_time_offset_s=0.0,
+        required_first_time_s=None,
+        required_last_time_s=None,
     ):
-        """Build the valid output timeline after azimuth-filter throwaway."""
+        """Build the valid output timeline after azimuth-filter throwaway.
+
+        ``required_first_time_s``/``required_last_time_s`` (zero-Doppler output
+        times, DAD §8.3.1) bound the slice on the PRI grid and are snapped to
+        integer lines. When omitted the support is the symmetric azimuth-filter
+        margin, so any caller that knows the annotation output extent should pass
+        them to reproduce the ESA SLC slice (e.g. this scene: first/last line
+        UTC from imageAnnotation).
+        """
         times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
         if times.ndim != 1 or times.size < 2 or np.any(np.diff(times) <= 0):
             raise ValueError("packet_azimuth_times_s must be strictly increasing.")
@@ -60,27 +70,35 @@ class L1OutputGeometry:
             raise ValueError("azimuth_sample_period_s must be positive.")
         # ponytail: one nominal offset; use range-extreme geometry offsets when
         # the downlink-quaternion convention is available.
-        shifted_margin = (
-            layout.overlap_samples / 2 + nominal_dc_time_offset_s / pri
-        )
-        start = max(0, int(np.ceil(shifted_margin)))
-        stop = min(
+        half_overlap = layout.overlap_samples / 2
+        margin = half_overlap + nominal_dc_time_offset_s / pri
+
+        lower = max(0, int(np.ceil(margin)))
+        upper = min(
             times.size,
-            int(np.floor(
-                times.size
-                - layout.overlap_samples / 2
-                + nominal_dc_time_offset_s / pri
-            )),
+            int(np.floor(times.size - half_overlap + nominal_dc_time_offset_s / pri)),
         )
-        if stop <= start:
-            raise ValueError("Azimuth support leaves no valid output lines.")
+
+        def snap_to_line(time_s, cell):
+            # Indices are integer PRI samples; snap any sub-half-sample goal to
+            # the nearest grid line so the anchor never splits a PRI.
+            return int(np.rint((float(time_s) - float(times[0])) / pri))
+
+        if required_first_time_s is not None:
+            lower = max(lower, snap_to_line(required_first_time_s, lower))
+        if required_last_time_s is not None:
+            upper = min(upper, snap_to_line(required_last_time_s, upper) + 1)
+        if upper <= lower:
+            raise ValueError(
+                "Zero-Doppler output window lies outside the az focus support."
+            )
         return cls(
-            start,
-            stop,
+            lower,
+            upper,
             0,
             int(num_range_samples),
-            float(times[0] + start * pri),
-            float(times[0] + (stop - 1) * pri),
+            float(times[0] + lower * pri),
+            float(times[0] + (upper - 1) * pri),
         )
 
 

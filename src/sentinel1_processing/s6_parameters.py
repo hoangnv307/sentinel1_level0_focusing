@@ -42,7 +42,8 @@ CORRECT_RX_VARIATION = True
 CORRECT_BISTATIC_DELAY = True
 BISTATIC_DELAY_METHOD = "Coarse"
 DCE_RMS_ERROR_THRESHOLD_HZ = 20.0
-MAX_ABSOLUTE_DOPPLER_HZ = 100.0
+# NOTE: maxDeltaFdc (100 Hz) giới hạn biến thiên DC giữa các azimuth block, dùng
+# tính overlap focus (DAD §9.12) — KHÔNG phải giới hạn |f_DC| và không suy ra N_amb.
 FOCUS_AZIMUTH_BANDWIDTH_HZ = 1398.0
 FOCUS_FFT_LENGTH = 4096
 EXTRA_AZIMUTH_OVERLAP_SAMPLES = 50
@@ -77,7 +78,14 @@ DCE_RANGE_BLOCK_SIZE_SAMPLES = 1000
 DCE_RANGE_ROI_STOP_SAMPLE = 17507
 DCE_UNWRAP_FFT_LENGTH = 4096
 DCE_OUTLIER_SIGMA = 2.5
-# Vì maxFdc=100 Hz nhỏ hơn PRF/2 của cảnh S6 này.
+# Ambiguity index N_amb such that f_abs = f_fine + N_amb*PRF (DAD §5.4).
+# NOTE: mặc định 0 là *shortcut đã kiểm chứng* trên chính scene này, không phải
+# hệ quả của maxFdc (100 Hz đó chỉ là giới hạn biến thiên giữa các azimuth block,
+# dùng cho overlap, chứ KHÔNG chứng minh |f_DC| < PRF/2). Để pipeline L0 -> L1
+# độc lập, phải truyền geometry_dc_provider tính N_amb từ orbit/attitude thay vì
+# phụ thuộc maxFdc. Giữ bằng 0 tạm thời vì đã khớp annotation của scene S6 này;
+# khi nối geometry DC (cần solver quỹ đạo/attitude theo doppler_centroid_estimation
+# GeometryDcProvider) thì bỏ hằng này.
 DCE_AMBIGUITY_NUMBER = 0
 SRC_SEGMENT_SAMPLES = 1024
 RCMC_KERNEL_LENGTH = 16

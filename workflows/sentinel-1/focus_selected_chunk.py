@@ -21,7 +21,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Sentinel-1 Level-0 → Focused SLC (Stripmap/S6)
+    # Sentinel-1 Level-0 → Focused SLC (configurable selected acquisition chunk, Stripmap/S6)
     """)
     return
 
@@ -109,7 +109,12 @@ def _(Path):
         for root in _roots
         for path in sorted(root.rglob("*.py"))
     ) + (Path(s6_parameters.__file__).read_bytes(),)
-    return azimuth_pre_processing, range_processing, range_source, s6_parameters
+    return (
+        azimuth_pre_processing,
+        range_processing,
+        range_source,
+        s6_parameters,
+    )
 
 
 @app.cell
@@ -183,6 +188,15 @@ def _(np):
             output=output,
             output_array=output_array,
         )
+        # sentinel1decoder caches every decoded chunk inside ``l0file`` for the
+        # whole session (l0file.py ``get_acquisition_chunk_data``).  On this
+        # scene a decoded chunk is 3-5 GB in RAM; the compressed result is what
+        # the pipeline needs afterwards, so drop the raw reference now to keep
+        # peak memory bounded instead of pinning every chunk until the notebook
+        # session ends.  ``radar_data`` is a local alias and is freed on return.
+        _raw_cache = getattr(l0file, "_acquisition_chunk_data_dict", None)
+        if _raw_cache is not None and _raw_cache.get(chunk) is not None:
+            _raw_cache[chunk] = None
         return compressed, range_times, (
             float(iq_bias.real), float(iq_bias.imag)
         ), preview
@@ -192,9 +206,25 @@ def _(np):
 
 @app.cell
 def _():
-    from notebook_support.cache import open_array, prune_old_entries, save_array
+    from notebook_support.cache import (
+        array_cache_matches,
+        cache_fingerprint,
+        invalidate_broken_array_cache,
+        open_array,
+        prune_old_entries,
+        save_cache_fingerprint,
+        save_array,
+    )
 
-    return open_array, prune_old_entries, save_array
+    return (
+        array_cache_matches,
+        cache_fingerprint,
+        invalidate_broken_array_cache,
+        open_array,
+        prune_old_entries,
+        save_array,
+        save_cache_fingerprint,
+    )
 
 
 @app.cell(hide_code=True)
@@ -219,7 +249,12 @@ def _(PROJECT_ROOT, mo, sentinel1decoder):
         _input_stat.st_size,
         _input_stat.st_mtime_ns,
     )
-    l0file = sentinel1decoder.Level0File(inputfile)
+    with mo.persistent_cache(
+        name="level0-metadata", save_path=CACHE_ROOT, pin_modules=True
+    ):
+        input_identity
+        l0file = sentinel1decoder.Level0File(inputfile)
+        l0file.ephemeris
     return CACHE_ROOT, input_identity, l0file
 
 
@@ -269,7 +304,7 @@ def _(mo):
 
 @app.cell
 def _(l0file):
-    selected_chunk = 13
+    selected_chunk = 14
 
     selection = l0file.get_acquisition_chunk_metadata(selected_chunk)
     len_az_line = len(selection)
@@ -304,8 +339,11 @@ def _(
     TXPSF,
     azimuth_pre_processing,
     input_identity,
+    invalidate_broken_array_cache,
     l0file,
+    len_az_line,
     mo,
+    np,
     open_array,
     process_chunk,
     range_reference_function,
@@ -317,6 +355,19 @@ def _(
     save_array,
     selected_chunk,
 ):
+    range_cache_directory = f"{CACHE_ROOT}/range-compression-{selected_chunk}"
+    range_cache_file = f"{range_cache_directory}/data.npy"
+    invalidate_broken_array_cache(
+        range_cache_directory,
+        range_cache_file,
+        expected_shape=(
+            len_az_line,
+            len(raw_slant_range_time_vec_s_1)
+            - int(np.ceil(TXPL * range_sample_freq))
+            + 1,
+        ),
+    )
+
     def _process_to_file(path):
         compressed, range_times, bias, preview = process_chunk(
             l0file,
@@ -339,10 +390,6 @@ def _(
         pin_modules=True,
     ):
         input_identity, range_source, raw_correction_source
-        # ponytail: fixed data path assumes the cache directory is deleted as a unit.
-        range_cache_file = (
-            f"{CACHE_ROOT}/range-compression-{selected_chunk}/data.npy"
-        )
         (
             slant_range_time_vec_s,
             iq_bias_components,
@@ -764,15 +811,15 @@ def _(mo):
 
 @app.cell
 def _(l0file, selected_chunk):
-    doppler_centroid_chunk = selected_chunk + 1
-    metadata_14 = l0file.get_acquisition_chunk_metadata(doppler_centroid_chunk)
-    return doppler_centroid_chunk, metadata_14
+    adjacent_chunk = selected_chunk - 1
+    adjacent_metadata = l0file.get_acquisition_chunk_metadata(adjacent_chunk)
+    return adjacent_chunk, adjacent_metadata
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    #### Time axes for chunk 14
+    #### Trục thời gian cho chunk kề
     """)
     return
 
@@ -780,27 +827,27 @@ def _(mo):
 @app.cell
 def _(
     SWST_BIAS_S,
-    metadata_14,
+    adjacent_metadata,
     np,
     range_processing,
     range_sample_freq,
     suppressed_data_time,
 ):
-    raw_range_count_14 = 2 * int(metadata_14["Number of Quads"].iloc[0])
-    range_start_time_14 = metadata_14["SWST"].iloc[0] + suppressed_data_time
-    raw_slant_range_time_14 = (
-        metadata_14["Rank"].iloc[0] * metadata_14["PRI"].iloc[0]
-        + range_start_time_14
-        + np.arange(raw_range_count_14) / range_sample_freq
+    raw_range_count_adjacent = 2 * int(adjacent_metadata["Number of Quads"].iloc[0])
+    range_start_time_adjacent = adjacent_metadata["SWST"].iloc[0] + suppressed_data_time
+    raw_slant_range_time_adjacent = (
+        adjacent_metadata["Rank"].iloc[0] * adjacent_metadata["PRI"].iloc[0]
+        + range_start_time_adjacent
+        + np.arange(raw_range_count_adjacent) / range_sample_freq
     )
-    raw_slant_range_time_14 = range_processing.swst_bias.correct(
-        raw_slant_range_time_14, SWST_BIAS_S
+    raw_slant_range_time_adjacent = range_processing.swst_bias.correct(
+        raw_slant_range_time_adjacent, SWST_BIAS_S
     )
-    packet_azimuth_times_14 = (
-        metadata_14["Coarse Time"].to_numpy(dtype=float)
-        + metadata_14["Fine Time"].to_numpy(dtype=float)
+    packet_azimuth_times_adjacent = (
+        adjacent_metadata["Coarse Time"].to_numpy(dtype=float)
+        + adjacent_metadata["Fine Time"].to_numpy(dtype=float)
     )
-    return packet_azimuth_times_14, raw_slant_range_time_14
+    return packet_azimuth_times_adjacent, raw_slant_range_time_adjacent
 
 
 @app.cell(hide_code=True)
@@ -841,11 +888,15 @@ def _(
     PRI,
     az_sample_freq,
     doppler_centroid_estimation,
-    packet_azimuth_times_14,
+    packet_azimuth_times_adjacent,
     packet_azimuth_times_s,
 ):
-    scene_start_acq_s = packet_azimuth_times_s[0]
-    scene_stop_acq_s = packet_azimuth_times_14[-1] + PRI
+    scene_start_acq_s = min(
+        packet_azimuth_times_s[0], packet_azimuth_times_adjacent[0]
+    )
+    scene_stop_acq_s = max(
+        packet_azimuth_times_s[-1], packet_azimuth_times_adjacent[-1]
+    ) + PRI
     doppler_centroid_estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
         prf_hz=az_sample_freq
     )
@@ -867,8 +918,10 @@ def _(
     TXPL,
     TXPRR,
     TXPSF,
+    adjacent_chunk,
+    array_cache_matches,
     azimuth_pre_processing,
-    doppler_centroid_chunk,
+    cache_fingerprint,
     doppler_centroid_estimation,
     doppler_centroid_estimator,
     doppler_source,
@@ -877,38 +930,48 @@ def _(
     mo,
     np,
     open_array,
-    packet_azimuth_times_14,
+    packet_azimuth_times_adjacent,
     packet_azimuth_times_s,
     process_chunk,
+    range_cache_file,
     range_reference_function,
     range_sample_freq,
     range_source,
     raw_correction_source,
     raw_data_correction,
-    raw_slant_range_time_14,
+    raw_slant_range_time_adjacent,
     raw_slant_range_time_vec_s_1,
     s6_parameters,
+    save_cache_fingerprint,
     scene_start_acq_s,
     scene_stop_acq_s,
     selected_chunk,
+    slant_range_time_vec_s,
 ):
     _common_range_start = min(
-        raw_slant_range_time_vec_s_1[0], raw_slant_range_time_14[0]
+        raw_slant_range_time_vec_s_1[0], raw_slant_range_time_adjacent[0]
     )
+
+    def _dce_grid(range_times, azimuth_times):
+        output_length = len(range_times) - int(np.ceil(TXPL * range_sample_freq)) + 1
+        shift_s = (
+            round((range_times[0] - _common_range_start) * range_sample_freq)
+            / range_sample_freq
+            - (range_times[0] - _common_range_start)
+        )
+        return shift_s, (len(azimuth_times), output_length)
 
     def _process_dce_to_file(path, chunk, range_times, azimuth_times):
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(f"{destination.suffix}.tmp")
-        transmitted_pulse_samples = int(np.ceil(TXPL * range_sample_freq))
+        shift_s, output_shape = _dce_grid(range_times, azimuth_times)
+
         output = np.lib.format.open_memmap(
             temporary,
             mode="w+",
             dtype=np.complex64,
-            shape=(
-                len(azimuth_times),
-                len(range_times) - transmitted_pulse_samples + 1,
-            ),
+            shape=output_shape,
         )
         compressed, output_times, _, _ = process_chunk(
             l0file,
@@ -921,11 +984,7 @@ def _(
             pulse_start_frequency_hz=TXPSF,
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
-            range_time_shift_s=(
-                round((range_times[0] - _common_range_start) * range_sample_freq)
-                / range_sample_freq
-                - (range_times[0] - _common_range_start)
-            ),
+            range_time_shift_s=shift_s,
             output="valid",
             output_array=output,
         )
@@ -933,43 +992,75 @@ def _(
         temporary.replace(destination)
         return output_times
 
+    def _prepare_dce_range(chunk, range_times, azimuth_times):
+        directory = f"{CACHE_ROOT}/dce-range-compression-{chunk}"
+        path = f"{directory}/data.npy"
+        shift_s, shape = _dce_grid(range_times, azimuth_times)
+        fingerprint = cache_fingerprint(
+            "dce-range-v1",
+            input_identity,
+            chunk,
+            raw_correction_source,
+            range_source,
+        )
+        if not array_cache_matches(directory, path, fingerprint, shape):
+            output_times = _process_dce_to_file(
+                path, chunk, range_times, azimuth_times
+            )
+            save_cache_fingerprint(directory, fingerprint)
+            return path, output_times
+        return path, np.asarray(range_times[:shape[1]]) + shift_s
+
     def _estimate():
-        range_file_13 = (
-            f"{CACHE_ROOT}/dce-range-compression-{selected_chunk}/data.npy"
+        selected_shift_s, _ = _dce_grid(
+            raw_slant_range_time_vec_s_1, packet_azimuth_times_s
         )
-        range_file_14 = (
-            f"{CACHE_ROOT}/dce-range-compression-{doppler_centroid_chunk}/data.npy"
+        if selected_shift_s == 0.0:
+            range_file_selected = range_cache_file
+            slant_range_time_selected = slant_range_time_vec_s
+        else:
+            range_file_selected, slant_range_time_selected = _prepare_dce_range(
+                selected_chunk,
+                raw_slant_range_time_vec_s_1,
+                packet_azimuth_times_s,
+            )
+        range_file_adjacent, slant_range_time_adjacent = _prepare_dce_range(
+            adjacent_chunk,
+            raw_slant_range_time_adjacent,
+            packet_azimuth_times_adjacent,
         )
-        slant_range_time_13 = _process_dce_to_file(
-            range_file_13,
-            selected_chunk,
-            raw_slant_range_time_vec_s_1,
-            packet_azimuth_times_s,
-        )
-        slant_range_time_14 = _process_dce_to_file(
-            range_file_14,
-            doppler_centroid_chunk,
-            raw_slant_range_time_14,
-            packet_azimuth_times_14,
-        )
-        range_compressed = open_array(range_file_13)
-        range_compressed_14 = open_array(range_file_14)
+        range_compressed_selected = open_array(range_file_selected)
+        range_compressed_adjacent = open_array(range_file_adjacent)
+
+        # Order segments chronologically by their first azimuth line so the shared
+        # Doppler interval crosses the chunk boundary cleanly.
+        if packet_azimuth_times_s[0] <= packet_azimuth_times_adjacent[0]:
+            ordered = [
+                ("selected", range_compressed_selected, slant_range_time_selected,
+                 packet_azimuth_times_s),
+                ("adjacent", range_compressed_adjacent, slant_range_time_adjacent,
+                 packet_azimuth_times_adjacent),
+            ]
+        else:
+            ordered = [
+                ("adjacent", range_compressed_adjacent, slant_range_time_adjacent,
+                 packet_azimuth_times_adjacent),
+                ("selected", range_compressed_selected, slant_range_time_selected,
+                 packet_azimuth_times_s),
+            ]
         segments = [
             doppler_centroid_estimation.Segment(
-                range_compressed,
-                slant_range_time_13,
-                packet_azimuth_times_s,
-                name="chunk13",
-            ),
-            doppler_centroid_estimation.Segment(
-                range_compressed_14,
-                slant_range_time_14,
-                packet_azimuth_times_14,
-                name="chunk14",
-            ),
+                data,
+                range_time,
+                az_times,
+                name=label,
+            )
+            for label, data, range_time, az_times in ordered
         ]
         estimates, prepared = doppler_centroid_estimator.estimate_segments(
             segments,
+            # N_amb shortcut đã kiểm chứng scene S6 (xem DCE_AMBIGUITY_NUMBER).
+            # Muốn L0->L1 độc lập: thay bằng geometry_dc_provider tính từ orbit.
             known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
             slice_start_times_s=[scene_start_acq_s],
             last_slice_stop_time_s=scene_stop_acq_s,
@@ -1275,7 +1366,12 @@ def _(effective_velocity, l0file, packet_azimuth_times_s, wavelength_m):
     effective_velocity_estimator = effective_velocity.Estimator.from_level0_product(
         l0file, wavelength_m
     )
-    effective_velocity_estimator.validate_time_coverage(packet_azimuth_times_s)
+    # Chunk 14 ends ~0.90 s after the last embedded state-vector epoch, so the
+    # focus aperture needs a small extrapolation allowance (mirrors the 2-chunk
+    # notebook). Chunk 13 lies fully inside the ephemeris window.
+    effective_velocity_estimator.validate_time_coverage(
+        packet_azimuth_times_s, max_extrapolation_s=1.0
+    )
     return (effective_velocity_estimator,)
 
 
@@ -1505,17 +1601,18 @@ def _(
     RCMC_KERNEL_LENGTH,
     RCMC_NUM_PHASES,
     SRC_SEGMENT_SAMPLES,
+    array_cache_matches,
     az_sample_period,
     azimuth_block_layout,
     azimuth_processing,
     azimuth_source,
     c,
-    doppler_centroid_estimates,
+    cache_fingerprint,
     doppler_centroid_for_block,
+    doppler_source,
     effective_velocity_estimator,
     effective_velocity_source,
     input_identity,
-    mo,
     open_array,
     output_geometry,
     packet_azimuth_times_s,
@@ -1525,9 +1622,22 @@ def _(
     range_source,
     raw_correction_source,
     save_array,
+    save_cache_fingerprint,
     slant_range_vec_m,
     wavelength_m,
 ):
+    focused_cache_directory = f"{CACHE_ROOT}/focused-slc"
+    focused_cache_file = f"{focused_cache_directory}/data.npy"
+    focused_cache_fingerprint = cache_fingerprint(
+        "focus-selected-chunk-v1",
+        input_identity,
+        raw_correction_source,
+        range_source,
+        doppler_source,
+        effective_velocity_source,
+        azimuth_source,
+    )
+
     def _focus_to_file(path):
         focused = azimuth_processing.processing_blocks.focus_slc(
             open_array(range_cache_file),
@@ -1551,21 +1661,17 @@ def _(
         )
         save_array(path, focused)
 
-    with mo.persistent_cache(
-        name="focused-slc", save_path=CACHE_ROOT, pin_modules=True
+    if not array_cache_matches(
+        focused_cache_directory,
+        focused_cache_file,
+        focused_cache_fingerprint,
+        output_geometry.shape,
     ):
-        (
-            azimuth_source,
-            doppler_centroid_estimates,
-            effective_velocity_source,
-            input_identity,
-            range_source,
-            raw_correction_source,
-        )
-        focused_cache_file = (
-            f"{CACHE_ROOT}/focused-slc/data.npy"
-        )
         _focus_to_file(focused_cache_file)
+        save_cache_fingerprint(
+            focused_cache_directory,
+            focused_cache_fingerprint,
+        )
     focused_image = open_array(focused_cache_file)
     return (focused_image,)
 
