@@ -50,17 +50,16 @@ class L1OutputGeometry:
         *,
         azimuth_sample_period_s,
         nominal_dc_time_offset_s=0.0,
+        slice_overlap_s=0.0,
         required_first_time_s=None,
         required_last_time_s=None,
     ):
         """Build the valid output timeline after azimuth-filter throwaway.
 
-        ``required_first_time_s``/``required_last_time_s`` (zero-Doppler output
-        times, DAD §8.3.1) bound the slice on the PRI grid and are snapped to
-        integer lines. When omitted the support is the symmetric azimuth-filter
-        margin, so any caller that knows the annotation output extent should pass
-        them to reproduce the ESA SLC slice (e.g. this scene: first/last line
-        UTC from imageAnnotation).
+        The default first line follows DAD Eq. 8-15 using the supplied nominal
+        DC offset, half the slice overlap, half the matched-filter duration and
+        the complete extra processing-block overlap. An explicit first time is
+        quantized to the next PRI; an explicit last-line time is quantized down.
         """
         times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
         if times.ndim != 1 or times.size < 2 or np.any(np.diff(times) <= 0):
@@ -68,26 +67,34 @@ class L1OutputGeometry:
         pri = float(azimuth_sample_period_s)
         if pri <= 0:
             raise ValueError("azimuth_sample_period_s must be positive.")
-        # ponytail: one nominal offset; use range-extreme geometry offsets when
-        # the downlink-quaternion convention is available.
-        half_overlap = layout.overlap_samples / 2
-        margin = half_overlap + nominal_dc_time_offset_s / pri
+        extra_overlap = (
+            layout.overlap_samples - layout.matched_filter_support_samples
+        )
+        if extra_overlap < 0:
+            raise ValueError("overlap_samples must include matched-filter support.")
+        if slice_overlap_s < 0:
+            raise ValueError("slice_overlap_s must be non-negative.")
+
+        # DAD Eq. 8-15: TsliceOv/2 + eta_c,nom + Tmf/2 + TdeltaOv.
+        margin = (
+            0.5 * float(slice_overlap_s) / pri
+            + float(nominal_dc_time_offset_s) / pri
+            + 0.5 * layout.matched_filter_support_samples
+            + extra_overlap
+        )
 
         lower = max(0, int(np.ceil(margin)))
         upper = min(
             times.size,
-            int(np.floor(times.size - half_overlap + nominal_dc_time_offset_s / pri)),
+            int(np.floor(times.size - margin)),
         )
 
-        def snap_to_line(time_s, cell):
-            # Indices are integer PRI samples; snap any sub-half-sample goal to
-            # the nearest grid line so the anchor never splits a PRI.
-            return int(np.rint((float(time_s) - float(times[0])) / pri))
-
         if required_first_time_s is not None:
-            lower = max(lower, snap_to_line(required_first_time_s, lower))
+            first = (float(required_first_time_s) - float(times[0])) / pri
+            lower = max(lower, int(np.ceil(first)))
         if required_last_time_s is not None:
-            upper = min(upper, snap_to_line(required_last_time_s, upper) + 1)
+            last = (float(required_last_time_s) - float(times[0])) / pri
+            upper = min(upper, int(np.floor(last)) + 1)
         if upper <= lower:
             raise ValueError(
                 "Zero-Doppler output window lies outside the az focus support."

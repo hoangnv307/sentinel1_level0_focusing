@@ -36,7 +36,8 @@ RX_GAIN_OVERSHOOT_COEFFICIENTS_V = (
 )
 
 
-# AUX_PP1: productId="SM_SL1__1", swath="S6".
+# AUX_PP1: productId="SM_SL1__1", swath="S6". Các boolean dưới đây là yêu
+# cầu cấu hình của IPF, không phải trạng thái implementation của demo.
 CORRECT_IQ_BIAS = True
 CORRECT_RX_VARIATION = True
 CORRECT_BISTATIC_DELAY = True

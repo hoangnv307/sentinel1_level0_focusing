@@ -96,9 +96,9 @@ class ProcessingTest(unittest.TestCase):
                 output=output,
             )
 
-        self.assertEqual(geometry.shape, (6, 3))
-        self.assertEqual(geometry.first_zero_doppler_time_s, 1.0)
-        self.assertEqual(geometry.last_zero_doppler_time_s, 6.0)
+        self.assertEqual(geometry.shape, (4, 3))
+        self.assertEqual(geometry.first_zero_doppler_time_s, 2.0)
+        self.assertEqual(geometry.last_zero_doppler_time_s, 5.0)
         self.assertIs(result, output)
         np.testing.assert_array_equal(output, np.ones_like(output))
 
@@ -109,14 +109,14 @@ class ProcessingTest(unittest.TestCase):
         pri = 0.5
         times = np.arange(n, dtype=np.float64) * pri
         layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
-            matched_filter_support_samples=1,
-            overlap_samples=10,
+            matched_filter_support_samples=0,
+            overlap_samples=0,
             step_samples=10,
             support_probe_indices=np.array([0]),
-            support_probe_samples=(1,),
+            support_probe_samples=(0,),
         )
-        # Anchor deliberately sits off-grid (+0.25 PTI) to prove sub-PRI goals
-        # snap to whole lines.
+        # DAD §8.3.1 moves the first time to the next PRI, while the last
+        # included line must not extend beyond its requested time.
         required_first = times[8] + 0.25 * pri
         required_last = times[55] + 0.25 * pri
         geometry = (
@@ -129,11 +129,30 @@ class ProcessingTest(unittest.TestCase):
                 required_last_time_s=required_last,
             )
         )
-        self.assertEqual(geometry.azimuth_start_line, 8)
+        self.assertEqual(geometry.azimuth_start_line, 9)
         self.assertEqual(geometry.azimuth_stop_line, 56)
-        self.assertEqual(geometry.shape[0], 56 - 8)
-        self.assertEqual(geometry.first_zero_doppler_time_s, times[8])
+        self.assertEqual(geometry.shape[0], 56 - 9)
+        self.assertEqual(geometry.first_zero_doppler_time_s, times[9])
         self.assertEqual(geometry.last_zero_doppler_time_s, times[55])
+
+        equation_8_15 = (
+            azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+                times,
+                3,
+                azimuth_processing.processing_blocks.ProcessingBlockLayout(
+                    matched_filter_support_samples=4,
+                    overlap_samples=6,
+                    step_samples=10,
+                    support_probe_indices=np.array([0]),
+                    support_probe_samples=(4,),
+                ),
+                azimuth_sample_period_s=pri,
+                nominal_dc_time_offset_s=0.25,
+                slice_overlap_s=1.0,
+            )
+        )
+        # 1 slice-overlap + 0.5 nominal-DC + 2 Tmf + 2 extra = 5.5 PRI.
+        self.assertEqual(equation_8_15.azimuth_start_line, 6)
 
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
@@ -360,7 +379,7 @@ class ProcessingTest(unittest.TestCase):
         )
         self.assertEqual(
             doppler_centroid_estimation.Config.for_stripmap_s6().accc_range_weighting,
-            "phase",
+            "power",
         )
         self.assertEqual(
             azimuth_pre_processing.__all__,

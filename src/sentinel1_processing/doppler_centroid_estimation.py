@@ -104,7 +104,7 @@ class Config:
             outlier_sigma=s6_parameters.DCE_OUTLIER_SIGMA,
             unwrap_weighting="coherence",
             fit_weighting="uniform",
-            accc_range_weighting="phase",
+            accc_range_weighting="power",
         )
 
 @dataclass(frozen=True)

@@ -866,11 +866,10 @@ def _(mo):
     ### 7.4 - Doppler centroid estimation (DAD §§5.2–5.5)
 
     Với sản phẩm S6 này, range-compression `valid` được gắn time axis tại
-    zero-lag của matched filter. Fine DC dùng trung bình pha ACCC để tránh một
-    vài range sample công suất lớn chi phối cả block. Unwrap dùng coherence để
+    zero-lag của matched filter. Fine DC lấy trung bình complex ACCC trong mỗi
+    range block rồi mới lấy phase theo DAD §5.2.2.2. Unwrap dùng coherence để
     giảm ảnh hưởng của nghiệm noisy theo DAD §5.3; polynomial dùng least squares
-    không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS. Cấu hình này tái
-    tạo đúng valid mask và `dataDcRmsError` của ba record annotation.
+    không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS.
     """)
     return
 
