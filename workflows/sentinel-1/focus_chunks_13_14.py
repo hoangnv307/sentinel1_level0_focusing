@@ -446,6 +446,7 @@ def _(
     input_identity,
     make_segments,
     mo,
+    raw_tau_13,
     s6_parameters,
 ):
     doppler_estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
@@ -458,6 +459,7 @@ def _(
         _stop = float(_segments[-1].azimuth_times_s[-1] + PRI)
         _estimates = doppler_estimator.estimate_segments(
             _segments,
+            dce_range_start_s=float(raw_tau_13[0]),
             known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
             slice_start_times_s=[_start],
             last_slice_stop_time_s=_stop,

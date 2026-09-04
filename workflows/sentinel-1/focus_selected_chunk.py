@@ -1012,6 +1012,11 @@ def _(
         return path, np.asarray(range_times[:shape[1]]) + shift_s
 
     def _estimate():
+        dce_range_start_s = float(
+            raw_slant_range_time_vec_s_1[0]
+            if packet_azimuth_times_s[0] <= packet_azimuth_times_adjacent[0]
+            else raw_slant_range_time_adjacent[0]
+        )
         selected_shift_s, _ = _dce_grid(
             raw_slant_range_time_vec_s_1, packet_azimuth_times_s
         )
@@ -1059,6 +1064,7 @@ def _(
         ]
         estimates, prepared = doppler_centroid_estimator.estimate_segments(
             segments,
+            dce_range_start_s=dce_range_start_s,
             # N_amb shortcut đã kiểm chứng scene S6 (xem DCE_AMBIGUITY_NUMBER).
             # Muốn L0->L1 độc lập: thay bằng geometry_dc_provider tính từ orbit.
             known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,

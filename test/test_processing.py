@@ -226,21 +226,86 @@ class ProcessingTest(unittest.TestCase):
 
     def test_s6_range_blocks_match_annotation_layout(self):
         config = doppler_centroid_estimation.Config.for_stripmap_s6()
+        sample_rate_hz = 46_918_402.8
+        root = ElementTree.parse(
+            Path(__file__).parents[1]
+            / "references"
+            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
+        ).getroot()
+        record = root.find("./dopplerCentroid/dcEstimateList/dcEstimate")
+        dce_range_start_s = float(record.findtext("t0"))
+        annotation_times = np.array([
+            float(point.findtext("slantRangeTime"))
+            for point in record.findall("./fineDceList/fineDce")
+        ])
+        common_range_start_s = dce_range_start_s - 81.25 / sample_rate_hz
+        common_range_times_s = (
+            common_range_start_s + np.arange(17634) / sample_rate_hz
+        )
         blocks = doppler_centroid_estimation.build_range_blocks(
-            17553,
-            np.arange(17553, dtype=float),
+            common_range_times_s.size,
+            common_range_times_s,
             config,
+            range_grid_start_s=dce_range_start_s,
         )
 
         self.assertEqual(
             [block.start_sample for block in blocks],
             [
-                0, 868, 1737, 2606, 3475, 4343, 5212, 6081, 6950, 7819,
-                8687, 9556, 10425, 11294, 12163, 13031, 13900, 14769,
-                15638, 16507,
+                81, 949, 1818, 2687, 3556, 4424, 5293, 6162, 7031, 7900,
+                8768, 9637, 10506, 11375, 12244, 13112, 13981, 14850,
+                15719, 16588,
             ],
         )
-        self.assertEqual(blocks[-1].stop_sample, 17507)
+        self.assertEqual(blocks[-1].stop_sample, 17588)
+        np.testing.assert_allclose(
+            [block.center_slant_range_time_s for block in blocks],
+            annotation_times,
+            atol=7e-11,
+            rtol=0.0,
+        )
+
+    def test_segment_dce_grid_is_independent_of_union_buffer(self):
+        prf_hz = 100.0
+        eta = np.arange(4) / prf_hz
+        phase = np.exp(2j * np.pi * 10.0 * eta)
+        first = doppler_centroid_estimation.Segment(
+            phase[:2, None] * np.ones((2, 6)),
+            2.0 + np.arange(6),
+            eta[:2],
+            name="first",
+        )
+        second = doppler_centroid_estimation.Segment(
+            phase[2:, None] * np.ones((2, 8)),
+            np.arange(8.0),
+            eta[2:],
+            name="second",
+        )
+        estimator = doppler_centroid_estimation.Estimator(
+            prf_hz,
+            doppler_centroid_estimation.Config(
+                azimuth_block_size_lines=4,
+                num_range_blocks=1,
+                range_block_size_samples=4,
+                range_roi_stop=4,
+                azimuth_placement="custom",
+                polynomial_degree=0,
+            ),
+        )
+
+        records, prepared = estimator.estimate_segments(
+            [first, second],
+            dce_range_start_s=2.25,
+            known_ambiguity_number=0,
+            custom_azimuth_starts=[0],
+            return_prepared_scene=True,
+        )
+
+        self.assertEqual(prepared.common_slant_range_times_s[0], 0.0)
+        self.assertEqual(records[0].t0_s, 2.25)
+        self.assertEqual(records[0].range_blocks[0].start_sample, 2)
+        self.assertEqual(records[0].range_blocks[0].center_slant_range_time_s, 4.25)
+        np.testing.assert_allclose(records[0].fine_baseband_hz, 10.0)
 
     def test_dce_plotting_splits_records_and_marks_rejected_points(self):
         records = [

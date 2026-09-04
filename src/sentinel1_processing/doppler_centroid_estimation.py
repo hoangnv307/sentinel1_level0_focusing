@@ -501,6 +501,8 @@ def build_range_blocks(
     n_range_samples: int,
     slant_range_times_s: ArrayLike,
     config: Config,
+    *,
+    range_grid_start_s: Optional[float] = None,
 ) -> list[RangeBlock]:
     """Build DCE range blocks according to DAD §5.6.
 
@@ -510,6 +512,10 @@ def build_range_blocks(
     generated.
 
     If no block size is supplied, the ROI is split approximately evenly.
+
+    ``range_grid_start_s`` decouples the DCE grid from the aligned buffer
+    origin. The nearest buffer sample supplies the data while block centre
+    times remain on the continuous DCE grid.
     """
     tau = np.asarray(slant_range_times_s, dtype=np.float64)
 
@@ -520,17 +526,23 @@ def build_range_blocks(
     if np.any(np.diff(tau) <= 0):
         raise ValueError("slant_range_times_s must be strictly increasing.")
 
-    roi0 = int(config.range_roi_start)
+    dtau = float(np.median(np.diff(tau)))
+    grid_start = (
+        float(tau[0])
+        if range_grid_start_s is None
+        else float(range_grid_start_s)
+    )
+    grid_offset = int(np.rint((grid_start - float(tau[0])) / dtau))
+
+    roi0 = grid_offset + int(config.range_roi_start)
     roi1 = (
         n_range_samples
         if config.range_roi_stop is None
-        else int(config.range_roi_stop)
+        else grid_offset + int(config.range_roi_stop)
     )
-    roi0 = max(0, roi0)
-    roi1 = min(n_range_samples, roi1)
 
-    if roi1 <= roi0:
-        raise ValueError("Invalid range ROI.")
+    if roi0 < 0 or roi1 > n_range_samples or roi1 <= roi0:
+        raise ValueError("DCE range ROI lies outside the aligned range buffer.")
 
     n_blocks = int(config.num_range_blocks)
     if n_blocks <= 0:
@@ -568,8 +580,6 @@ def build_range_blocks(
 
         stops = starts + B
 
-    dtau = float(np.median(np.diff(tau)))
-
     blocks: list[RangeBlock] = []
     for start, stop in zip(starts, stops):
         start = int(start)
@@ -582,7 +592,10 @@ def build_range_blocks(
         # the block centre is tau[start] + B/2 * dtau. This matches the supplied
         # S6 annotation more closely than a (B-1)/2 sample-centre convention.
         center_sample = start + 0.5 * (stop - start)
-        center_tau = float(tau[start] + 0.5 * (stop - start) * dtau)
+        center_tau = float(
+            grid_start
+            + (start - grid_offset + 0.5 * (stop - start)) * dtau
+        )
 
         blocks.append(
             RangeBlock(
@@ -1557,6 +1570,7 @@ class Estimator:
         segments: Sequence[Segment],
         *,
         azimuth_time_offset_s: float = 0.0,
+        dce_range_start_s: Optional[float] = None,
         t0_s: Optional[float] = None,
         geometry_dc_provider: Optional[GeometryDcProvider] = None,
         known_ambiguity_number: Optional[int] = None,
@@ -1582,6 +1596,9 @@ class Estimator:
 
         ``known_ambiguity_number`` may be used when an independent auxiliary
         bound proves the PRF ambiguity without a geometry polynomial.
+
+        ``dce_range_start_s`` is the DCE range-grid origin. It may differ from
+        the union buffer origin used to align SWST changes.
         """
         prepared = self.prepare_segments(
             segments,
@@ -1609,12 +1626,19 @@ class Estimator:
             n_range_samples=prepared.num_range_samples,
             slant_range_times_s=prepared.common_slant_range_times_s,
             config=self.config,
+            range_grid_start_s=dce_range_start_s,
         )
 
         range_times = np.asarray(
             [rb.center_slant_range_time_s for rb in rg_blocks],
             dtype=np.float64,
         )
+        dce_grid_start = (
+            float(prepared.common_slant_range_times_s[0])
+            if dce_range_start_s is None
+            else float(dce_range_start_s)
+        )
+        fit_t0 = dce_grid_start if t0_s is None else float(t0_s)
 
         records: list[Estimate] = []
 
@@ -1651,7 +1675,6 @@ class Estimator:
                 weights=unwrap_weights,
             )
 
-            t0 = float(range_times[0]) if t0_s is None else float(t0_s)
             geometry_poly: Optional[np.ndarray] = None
             ambiguity_number: Optional[int] = None
             ambiguity_resolved = False
@@ -1678,7 +1701,7 @@ class Estimator:
                     fine_unwrapped,
                     geometry,
                     self.prf_hz,
-                    t0_s=t0,
+                    t0_s=fit_t0,
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_fit_iterations=self.config.max_fit_iterations,
@@ -1698,7 +1721,7 @@ class Estimator:
                 data_poly, valid_mask, rms = fit_polynomial(
                     range_times,
                     absolute,
-                    t0_s=t0,
+                    t0_s=fit_t0,
                     degree=self.config.polynomial_degree,
                     outlier_sigma=self.config.outlier_sigma,
                     max_iterations=self.config.max_fit_iterations,
@@ -1708,7 +1731,7 @@ class Estimator:
             records.append(
                 Estimate(
                     block=block,
-                    t0_s=t0,
+                    t0_s=fit_t0,
                     range_blocks=list(rg_blocks),
                     fine_baseband_hz=fine,
                     fine_unwrapped_hz=fine_unwrapped,
@@ -2035,7 +2058,7 @@ def _self_test() -> None:
     if np.max(np.abs(fine - expected)) > 0.2:
         raise RuntimeError("Synthetic CDCE self-test failed.")
 
-    # --- Multi-segment test: segment #2 starts 0.25 range sample earlier ---
+    # --- Multi-segment test: union buffer and DCE grid have distinct origins ---
     fs = 20e6
     dt = 1.0 / fs
     n1 = 160
@@ -2044,8 +2067,12 @@ def _self_test() -> None:
     nr2 = 150
     fdc = 82.0
 
-    tau1 = 0.006 + np.arange(nr1) * dt
-    tau2 = (0.006 - 0.25 * dt) + np.arange(nr2) * dt
+    dce_range_start = 0.006
+    common_range_start = dce_range_start - 2.25 * dt
+    # Fractional SWST correction has already put both arrays on integer-spaced
+    # buffer columns; the continuous DCE origin retains the remaining 0.25.
+    tau1 = common_range_start + (2 + np.arange(nr1)) * dt
+    tau2 = common_range_start + np.arange(nr2) * dt
 
     eta1 = np.arange(n1) / prf
     eta2 = np.arange(n1, n1 + n2) / prf
@@ -2078,18 +2105,16 @@ def _self_test() -> None:
     est = Estimator(prf, cfg2)
     recs, prepared = est.estimate_segments(
         [seg1, seg2],
+        dce_range_start_s=dce_range_start,
         custom_azimuth_starts=[0],
         return_prepared_scene=True,
         batch_lines=64,
     )
 
-    shift = prepared.alignment_summary()[1]["source_start_index"]
-    if abs(shift - 0.25) > 1e-8:
-        raise RuntimeError(
-            f"Fractional alignment self-test failed: expected 0.25, got {shift}."
-        )
-    if prepared.num_range_samples != nr1:
-        raise RuntimeError("Reference range-grid self-test failed.")
+    if prepared.common_slant_range_times_s[0] != common_range_start:
+        raise RuntimeError("Union range-buffer self-test failed.")
+    if recs[0].t0_s != dce_range_start:
+        raise RuntimeError("DCE range-grid origin self-test failed.")
 
     if np.max(np.abs(recs[0].fine_baseband_hz - fdc)) > 0.25:
         raise RuntimeError("Multi-segment DCE self-test failed.")
