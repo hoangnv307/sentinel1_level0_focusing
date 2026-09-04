@@ -209,6 +209,7 @@ def _():
     from notebook_support.cache import (
         array_cache_matches,
         cache_fingerprint,
+        chunk_cache_key,
         invalidate_broken_array_cache,
         open_array,
         prune_old_entries,
@@ -219,6 +220,7 @@ def _():
     return (
         array_cache_matches,
         cache_fingerprint,
+        chunk_cache_key,
         invalidate_broken_array_cache,
         open_array,
         prune_old_entries,
@@ -303,14 +305,30 @@ def _(mo):
 
 
 @app.cell
-def _(l0file):
-    selected_chunk = 14
+def _(chunk_cache_key, l0file):
+    _processing_chunks = (13, 14)
+    selected_chunk = 13
+    if selected_chunk not in _processing_chunks:
+        raise ValueError(f"selected_chunk must be one of {_processing_chunks}.")
+    adjacent_chunk = next(
+        chunk for chunk in _processing_chunks if chunk != selected_chunk
+    )
+    chunk_pair_cache_key = chunk_cache_key(_processing_chunks)
 
     selection = l0file.get_acquisition_chunk_metadata(selected_chunk)
+    adjacent_metadata = l0file.get_acquisition_chunk_metadata(adjacent_chunk)
     len_az_line = len(selection)
     raw_len_range_line = 2 * int(selection["Number of Quads"].iloc[0])
     selection
-    return len_az_line, raw_len_range_line, selected_chunk, selection
+    return (
+        adjacent_chunk,
+        adjacent_metadata,
+        chunk_pair_cache_key,
+        len_az_line,
+        raw_len_range_line,
+        selected_chunk,
+        selection,
+    )
 
 
 @app.cell(hide_code=True)
@@ -338,6 +356,8 @@ def _(
     TXPRR,
     TXPSF,
     azimuth_pre_processing,
+    cache_fingerprint,
+    chunk_pair_cache_key,
     input_identity,
     invalidate_broken_array_cache,
     l0file,
@@ -349,14 +369,27 @@ def _(
     range_reference_function,
     range_sample_freq,
     range_source,
+    range_time_shift_selected,
     raw_correction_source,
     raw_data_correction,
     raw_slant_range_time_vec_s_1,
     save_array,
+    save_cache_fingerprint,
     selected_chunk,
 ):
-    range_cache_directory = f"{CACHE_ROOT}/range-compression-{selected_chunk}"
+    range_cache_directory = (
+        f"{CACHE_ROOT}/{chunk_pair_cache_key}/range-compression-{selected_chunk}"
+    )
     range_cache_file = f"{range_cache_directory}/data.npy"
+    range_cache_fingerprint = cache_fingerprint(
+        "pair-range-v1",
+        input_identity,
+        chunk_pair_cache_key,
+        selected_chunk,
+        range_time_shift_selected,
+        raw_correction_source,
+        range_source,
+    )
     invalidate_broken_array_cache(
         range_cache_directory,
         range_cache_file,
@@ -380,13 +413,14 @@ def _(
             pulse_start_frequency_hz=TXPSF,
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
+            range_time_shift_s=range_time_shift_selected,
         )
         save_array(path, compressed)
         return range_times, bias, preview
 
     with mo.persistent_cache(
         name=f"range-compression-{selected_chunk}",
-        save_path=CACHE_ROOT,
+        save_path=f"{CACHE_ROOT}/{chunk_pair_cache_key}",
         pin_modules=True,
     ):
         input_identity, range_source, raw_correction_source
@@ -395,6 +429,9 @@ def _(
             iq_bias_components,
             radar_data_preview,
         ) = _process_to_file(range_cache_file)
+        save_cache_fingerprint(
+            range_cache_directory, range_cache_fingerprint
+        )
     range_compressed = open_array(range_cache_file)
     return (
         iq_bias_components,
@@ -421,7 +458,7 @@ def _(mo):
 
 @app.cell
 def _(colors, plt, radar_data_preview):
-    plt.figure(figsize=(12, 12))
+    plt.figure(figsize=(12, 12), dpi = 75)
     plt.title("Sentinel-1 Raw I/Q Sensor Output")
     plt.imshow(
         radar_data_preview,
@@ -718,7 +755,7 @@ def _(mo):
 
 @app.cell
 def _(colors, np, plt, range_compressed):
-    plt.figure(figsize=(12, 12))
+    plt.figure(figsize=(12, 12), dpi = 75)
     plt.title("After Range Compression")
     plt.imshow(
         np.abs(range_compressed[::20, ::20]),
@@ -809,13 +846,6 @@ def _(mo):
     return
 
 
-@app.cell
-def _(l0file, selected_chunk):
-    adjacent_chunk = selected_chunk - 1
-    adjacent_metadata = l0file.get_acquisition_chunk_metadata(adjacent_chunk)
-    return adjacent_chunk, adjacent_metadata
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -831,6 +861,7 @@ def _(
     np,
     range_processing,
     range_sample_freq,
+    raw_slant_range_time_vec_s_1,
     suppressed_data_time,
 ):
     raw_range_count_adjacent = 2 * int(adjacent_metadata["Number of Quads"].iloc[0])
@@ -847,7 +878,26 @@ def _(
         adjacent_metadata["Coarse Time"].to_numpy(dtype=float)
         + adjacent_metadata["Fine Time"].to_numpy(dtype=float)
     )
-    return packet_azimuth_times_adjacent, raw_slant_range_time_adjacent
+    _common_start = min(
+        raw_slant_range_time_vec_s_1[0], raw_slant_range_time_adjacent[0]
+    )
+
+    def _fractional_shift(range_times):
+        _offset = (range_times[0] - _common_start) * range_sample_freq
+        return (round(_offset) - _offset) / range_sample_freq
+
+    range_time_shift_selected = _fractional_shift(
+        raw_slant_range_time_vec_s_1
+    )
+    range_time_shift_adjacent = _fractional_shift(
+        raw_slant_range_time_adjacent
+    )
+    return (
+        packet_azimuth_times_adjacent,
+        range_time_shift_adjacent,
+        range_time_shift_selected,
+        raw_slant_range_time_adjacent,
+    )
 
 
 @app.cell(hide_code=True)
@@ -866,10 +916,12 @@ def _(mo):
     ### 7.4 - Doppler centroid estimation (DAD §§5.2–5.5)
 
     Với sản phẩm S6 này, range-compression `valid` được gắn time axis tại
-    zero-lag của matched filter. Fine DC lấy trung bình complex ACCC trong mỗi
-    range block rồi mới lấy phase theo DAD §5.2.2.2. Unwrap dùng coherence để
-    giảm ảnh hưởng của nghiệm noisy theo DAD §5.3; polynomial dùng least squares
-    không trọng số và iterative RMS clipping ở ngưỡng 2.5 RMS.
+    zero-lag của matched filter. DAD §5.2.2.2 quy định lấy trung bình complex
+    ACCC trong mỗi range block. Demo hiện dùng phase-only averaging để so khớp
+    sản phẩm L1 khi các hiệu chỉnh biên độ phụ thuộc range của IPF chưa được nối
+    vào pipeline; cấu hình generic vẫn giữ complex/power averaging. Unwrap dùng
+    coherence theo DAD §5.3; polynomial dùng least squares không trọng số và
+    iterative RMS clipping ở ngưỡng 2.5 RMS.
     """)
     return
 
@@ -921,6 +973,7 @@ def _(
     array_cache_matches,
     azimuth_pre_processing,
     cache_fingerprint,
+    chunk_pair_cache_key,
     doppler_centroid_estimation,
     doppler_centroid_estimator,
     doppler_source,
@@ -936,6 +989,7 @@ def _(
     range_reference_function,
     range_sample_freq,
     range_source,
+    range_time_shift_adjacent,
     raw_correction_source,
     raw_data_correction,
     raw_slant_range_time_adjacent,
@@ -944,27 +998,19 @@ def _(
     save_cache_fingerprint,
     scene_start_acq_s,
     scene_stop_acq_s,
-    selected_chunk,
     slant_range_time_vec_s,
 ):
-    _common_range_start = min(
-        raw_slant_range_time_vec_s_1[0], raw_slant_range_time_adjacent[0]
-    )
-
-    def _dce_grid(range_times, azimuth_times):
+    def _dce_grid(range_times, azimuth_times, shift_s):
         output_length = len(range_times) - int(np.ceil(TXPL * range_sample_freq)) + 1
-        shift_s = (
-            round((range_times[0] - _common_range_start) * range_sample_freq)
-            / range_sample_freq
-            - (range_times[0] - _common_range_start)
-        )
         return shift_s, (len(azimuth_times), output_length)
 
-    def _process_dce_to_file(path, chunk, range_times, azimuth_times):
+    def _process_dce_to_file(
+        path, chunk, range_times, azimuth_times, shift_s
+    ):
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(f"{destination.suffix}.tmp")
-        shift_s, output_shape = _dce_grid(range_times, azimuth_times)
+        _, output_shape = _dce_grid(range_times, azimuth_times, shift_s)
 
         output = np.lib.format.open_memmap(
             temporary,
@@ -991,20 +1037,24 @@ def _(
         temporary.replace(destination)
         return output_times
 
-    def _prepare_dce_range(chunk, range_times, azimuth_times):
-        directory = f"{CACHE_ROOT}/dce-range-compression-{chunk}"
+    def _prepare_dce_range(chunk, range_times, azimuth_times, shift_s):
+        directory = (
+            f"{CACHE_ROOT}/{chunk_pair_cache_key}/range-compression-{chunk}"
+        )
         path = f"{directory}/data.npy"
-        shift_s, shape = _dce_grid(range_times, azimuth_times)
+        _, shape = _dce_grid(range_times, azimuth_times, shift_s)
         fingerprint = cache_fingerprint(
-            "dce-range-v1",
+            "pair-range-v1",
             input_identity,
+            chunk_pair_cache_key,
             chunk,
+            shift_s,
             raw_correction_source,
             range_source,
         )
         if not array_cache_matches(directory, path, fingerprint, shape):
             output_times = _process_dce_to_file(
-                path, chunk, range_times, azimuth_times
+                path, chunk, range_times, azimuth_times, shift_s
             )
             save_cache_fingerprint(directory, fingerprint)
             return path, output_times
@@ -1016,22 +1066,13 @@ def _(
             if packet_azimuth_times_s[0] <= packet_azimuth_times_adjacent[0]
             else raw_slant_range_time_adjacent[0]
         )
-        selected_shift_s, _ = _dce_grid(
-            raw_slant_range_time_vec_s_1, packet_azimuth_times_s
-        )
-        if selected_shift_s == 0.0:
-            range_file_selected = range_cache_file
-            slant_range_time_selected = slant_range_time_vec_s
-        else:
-            range_file_selected, slant_range_time_selected = _prepare_dce_range(
-                selected_chunk,
-                raw_slant_range_time_vec_s_1,
-                packet_azimuth_times_s,
-            )
+        range_file_selected = range_cache_file
+        slant_range_time_selected = slant_range_time_vec_s
         range_file_adjacent, slant_range_time_adjacent = _prepare_dce_range(
             adjacent_chunk,
             raw_slant_range_time_adjacent,
             packet_azimuth_times_adjacent,
+            range_time_shift_adjacent,
         )
         range_compressed_selected = open_array(range_file_selected)
         range_compressed_adjacent = open_array(range_file_adjacent)
@@ -1077,7 +1118,9 @@ def _(
         return estimates, prepared.alignment_summary()
 
     with mo.persistent_cache(
-        name="doppler-centroid", save_path=CACHE_ROOT, pin_modules=True
+        name="doppler-centroid",
+        save_path=f"{CACHE_ROOT}/{chunk_pair_cache_key}",
+        pin_modules=True,
     ):
         input_identity, doppler_source, range_source, raw_correction_source
         (
@@ -1613,6 +1656,7 @@ def _(
     azimuth_source,
     c,
     cache_fingerprint,
+    chunk_pair_cache_key,
     doppler_centroid_for_block,
     doppler_source,
     effective_velocity_estimator,
@@ -1628,10 +1672,13 @@ def _(
     raw_correction_source,
     save_array,
     save_cache_fingerprint,
+    selected_chunk,
     slant_range_vec_m,
     wavelength_m,
 ):
-    focused_cache_directory = f"{CACHE_ROOT}/focused-slc"
+    focused_cache_directory = (
+        f"{CACHE_ROOT}/{chunk_pair_cache_key}/focused-selected-{selected_chunk}"
+    )
     focused_cache_file = f"{focused_cache_directory}/data.npy"
     focused_cache_fingerprint = cache_fingerprint(
         "focus-selected-chunk-v1",
@@ -1699,9 +1746,11 @@ def _(focused_image, pd):
 
 
 @app.cell(hide_code=True)
-def _(CACHE_ROOT, focused_image, prune_old_entries):
+def _(CACHE_ROOT, chunk_pair_cache_key, focused_image, prune_old_entries):
     focused_image
-    removed_cache_entries = prune_old_entries(CACHE_ROOT)
+    removed_cache_entries = prune_old_entries(
+        f"{CACHE_ROOT}/{chunk_pair_cache_key}"
+    )
     if removed_cache_entries:
         print(f"Đã xóa {removed_cache_entries} cache cũ.")
     return

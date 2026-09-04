@@ -43,6 +43,9 @@ CORRECT_RX_VARIATION = True
 CORRECT_BISTATIC_DELAY = True
 BISTATIC_DELAY_METHOD = "Coarse"
 DCE_RMS_ERROR_THRESHOLD_HZ = 20.0
+# Empirical L0-estimate/L1 Fine-DC parity limit for the supplied S6 scene.
+# This is a regression-test threshold, not the AUX_PP1 polynomial-fit limit.
+DCE_L1_FINE_RMSE_THRESHOLD_HZ = 3.0
 # NOTE: maxDeltaFdc (100 Hz) giới hạn biến thiên DC giữa các azimuth block, dùng
 # tính overlap focus (DAD §9.12) — KHÔNG phải giới hạn |f_DC| và không suy ra N_amb.
 FOCUS_AZIMUTH_BANDWIDTH_HZ = 1398.0

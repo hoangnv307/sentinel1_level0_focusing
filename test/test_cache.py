@@ -8,6 +8,7 @@ import numpy as np
 from notebook_support.cache import (
     array_cache_matches,
     cache_fingerprint,
+    chunk_cache_key,
     invalidate_broken_array_cache,
     open_array,
     prune_old_entries,
@@ -17,6 +18,11 @@ from notebook_support.cache import (
 
 
 class CacheTest(unittest.TestCase):
+    def test_chunk_cache_key_is_order_independent(self):
+        self.assertEqual(chunk_cache_key((14, 13)), "chunks-13-14")
+        with self.assertRaises(ValueError):
+            chunk_cache_key((13, 13))
+
     def test_large_array_cache_is_memory_mapped(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "array.npy"

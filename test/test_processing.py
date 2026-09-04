@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -6,6 +7,7 @@ from xml.etree import ElementTree
 
 import matplotlib.pyplot as plt
 import numpy as np
+import sentinel1decoder
 from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
 import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
@@ -14,6 +16,7 @@ import sentinel1_processing.dce_plotting as dce_plotting
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
+import sentinel1_processing.s6_parameters as s6_parameters
 
 
 class ProcessingTest(unittest.TestCase):
@@ -284,6 +287,121 @@ class ProcessingTest(unittest.TestCase):
             rtol=0.0,
         )
 
+    def test_s6_estimated_fine_dc_matches_l1_annotation(self):
+        project = Path(__file__).parents[1]
+        raw_path = (
+            project / "data/sao_paulo/"
+            "s1a-s6-raw-s-vv-20251226t214356-20251226t214427-062491-07d496.dat"
+        )
+        pair_cache = project / ".cache/sentinel1/chunks-13-14"
+        cache_paths = {
+            13: pair_cache / "range-compression-13/data.npy",
+            14: pair_cache / "range-compression-14/data.npy",
+        }
+        legacy_paths = {
+            13: project / ".cache/sentinel1/dce-range-compression-13/data.npy",
+            14: project / ".cache/sentinel1/range-compression-14/data.npy",
+        }
+        cache_paths = {
+            chunk: path if path.exists() else legacy_paths[chunk]
+            for chunk, path in cache_paths.items()
+        }
+        if not raw_path.exists() or not all(path.exists() for path in cache_paths.values()):
+            self.skipTest("Cần dữ liệu L0 và cache range-compression S6 để test parity.")
+
+        l0file = sentinel1decoder.Level0File(str(raw_path))
+        metadata = {
+            chunk: l0file.get_acquisition_chunk_metadata(chunk)
+            for chunk in cache_paths
+        }
+        selected = metadata[14]
+        sample_rate_hz = sentinel1decoder.utilities.range_dec_to_sample_rate(
+            selected["Range Decimation"].iloc[0]
+        )
+        suppressed_data_time_s = 320.0 / (
+            8.0 * sentinel1decoder.constants.F_REF
+        )
+
+        def axes(chunk):
+            table = metadata[chunk]
+            count = 2 * int(table["Number of Quads"].iloc[0])
+            range_times = (
+                table["Rank"].iloc[0] * table["PRI"].iloc[0]
+                + table["SWST"].iloc[0]
+                + suppressed_data_time_s
+                + np.arange(count) / sample_rate_hz
+                - s6_parameters.SWST_BIAS_S
+            )
+            azimuth_times = (
+                table["Coarse Time"].to_numpy(dtype=float)
+                + table["Fine Time"].to_numpy(dtype=float)
+            )
+            return range_times, azimuth_times
+
+        native_axes = {chunk: axes(chunk) for chunk in cache_paths}
+        common_start_s = min(values[0][0] for values in native_axes.values())
+        pulse_samples = int(np.ceil(
+            selected["Tx Pulse Length"].iloc[0] * sample_rate_hz
+        ))
+        segments = []
+        for chunk in (13, 14):
+            range_times, azimuth_times = native_axes[chunk]
+            delta_samples = (range_times[0] - common_start_s) * sample_rate_hz
+            fractional_shift_s = (
+                round(delta_samples) / sample_rate_hz
+                - (range_times[0] - common_start_s)
+            )
+            segments.append(doppler_centroid_estimation.Segment(
+                np.load(cache_paths[chunk], mmap_mode="r"),
+                range_times[:-pulse_samples + 1] + fractional_shift_s,
+                azimuth_times,
+                name=f"chunk-{chunk}",
+            ))
+
+        config = replace(
+            doppler_centroid_estimation.Config.for_stripmap_s6(),
+            accc_range_weighting="phase",
+        )
+        estimator = doppler_centroid_estimation.Estimator(
+            1.0 / float(selected["PRI"].iloc[0]), config
+        )
+        first_time_s = segments[0].azimuth_times_s[0]
+        last_time_s = segments[-1].azimuth_times_s[-1] + float(
+            selected["PRI"].iloc[0]
+        )
+        estimates = estimator.estimate_segments(
+            segments,
+            dce_range_start_s=native_axes[13][0][0],
+            known_ambiguity_number=0,
+            slice_start_times_s=[first_time_s],
+            last_slice_stop_time_s=last_time_s,
+            product_start_time_s=first_time_s,
+            product_stop_time_s=last_time_s,
+            zero_dop_minus_acq_time_s=0.0,
+        )
+        annotation = ElementTree.parse(
+            project / "references/"
+            "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
+        ).getroot().findall("./dopplerCentroid/dcEstimateList/dcEstimate")
+
+        self.assertEqual(len(estimates), len(annotation))
+        for record_index, (estimated, reference) in enumerate(
+            zip(estimates, annotation), start=1
+        ):
+            reference_hz = np.array([
+                float(point.findtext("frequency"))
+                for point in reference.findall("./fineDceList/fineDce")
+            ])
+            rmse_hz = float(np.sqrt(np.mean(
+                (estimated.fine_absolute_hz - reference_hz) ** 2
+            )))
+            with self.subTest(record=record_index):
+                self.assertLessEqual(
+                    rmse_hz,
+                    s6_parameters.DCE_L1_FINE_RMSE_THRESHOLD_HZ,
+                    f"DCE{record_index} Fine-DC RMSE = {rmse_hz:.3f} Hz",
+                )
+
     def test_segment_dce_grid_is_independent_of_union_buffer(self):
         prf_hz = 100.0
         eta = np.arange(4) / prf_hz
@@ -379,7 +497,7 @@ class ProcessingTest(unittest.TestCase):
         )
         self.assertEqual(
             doppler_centroid_estimation.Config.for_stripmap_s6().accc_range_weighting,
-            "power",
+            "phase",
         )
         self.assertEqual(
             azimuth_pre_processing.__all__,

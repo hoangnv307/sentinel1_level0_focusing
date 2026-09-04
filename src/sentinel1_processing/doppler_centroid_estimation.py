@@ -104,7 +104,10 @@ class Config:
             outlier_sigma=s6_parameters.DCE_OUTLIER_SIGMA,
             unwrap_weighting="coherence",
             fit_weighting="uniform",
-            accc_range_weighting="power",
+            # The demo does not yet apply the IPF range-dependent amplitude
+            # corrections. Phase-only averaging is therefore used for S6
+            # product parity; the generic/DAD default remains "power".
+            accc_range_weighting="phase",
         )
 
 @dataclass(frozen=True)

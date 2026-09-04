@@ -36,7 +36,13 @@ def _():
     import numpy as np
     import sentinel1decoder
 
-    from notebook_support.cache import open_array
+    from notebook_support.cache import (
+        array_cache_matches,
+        cache_fingerprint,
+        chunk_cache_key,
+        open_array,
+        save_cache_fingerprint,
+    )
 
     notebook_started_at = perf_counter()
     plt.style.use("default")
@@ -44,12 +50,16 @@ def _():
         PROJECT_ROOT,
         Path,
         colors,
+        array_cache_matches,
+        cache_fingerprint,
+        chunk_cache_key,
         notebook_started_at,
         np,
         open_array,
         perf_counter,
         plt,
         sentinel1decoder,
+        save_cache_fingerprint,
     )
 
 
@@ -71,10 +81,8 @@ def _(Path):
         _path.read_bytes()
         for _root in dict.fromkeys(_range_roots)
         for _path in sorted(_root.rglob("*.py"))
-    ) + (
-        Path(raw_data_correction.__file__).read_bytes(),
-        Path(s6_parameters.__file__).read_bytes(),
-    )
+    ) + (Path(s6_parameters.__file__).read_bytes(),)
+    raw_correction_source = Path(raw_data_correction.__file__).read_bytes()
     doppler_source = (
         Path(doppler_centroid_estimation.__file__).read_bytes(),
         Path(s6_parameters.__file__).read_bytes(),
@@ -97,6 +105,7 @@ def _(Path):
         focus_source,
         range_processing,
         range_source,
+        raw_correction_source,
         raw_data_correction,
         s6_parameters,
     )
@@ -131,8 +140,9 @@ def _(PROJECT_ROOT, mo, sentinel1decoder):
 
 
 @app.cell
-def _(l0file, s6_parameters, sentinel1decoder):
+def _(chunk_cache_key, l0file, s6_parameters, sentinel1decoder):
     CHUNKS = (13, 14)
+    CHUNK_CACHE_KEY = chunk_cache_key(CHUNKS)
     metadata_13 = l0file.get_acquisition_chunk_metadata(CHUNKS[0])
     metadata_14 = l0file.get_acquisition_chunk_metadata(CHUNKS[1])
 
@@ -149,6 +159,7 @@ def _(l0file, s6_parameters, sentinel1decoder):
     suppressed_data_time = 320.0 / (8.0 * sentinel1decoder.constants.F_REF)
     return (
         CHUNKS,
+        CHUNK_CACHE_KEY,
         PRI,
         TXPL,
         TXPRR,
@@ -302,22 +313,35 @@ def _(mo):
 @app.cell
 def _(
     CACHE_ROOT,
+    CHUNK_CACHE_KEY,
+    array_cache_matches,
+    cache_fingerprint,
     compress_chunk_to_file,
+    eta_13,
     input_identity,
-    mo,
     open_array,
     range_source,
     range_time_shift_13,
+    raw_correction_source,
     raw_tau_13,
+    save_cache_fingerprint,
+    transmitted_pulse_samples,
 ):
-    with mo.persistent_cache(
-        name="merge-range-compression-13", save_path=CACHE_ROOT, pin_modules=True
-    ):
-        input_identity, range_source
-        range_cache_13 = f"{CACHE_ROOT}/range-compression-13/data.npy"
+    _directory = f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/range-compression-13"
+    range_cache_13 = f"{_directory}/data.npy"
+    _shape = (len(eta_13), len(raw_tau_13) - transmitted_pulse_samples + 1)
+    _fingerprint = cache_fingerprint(
+        "pair-range-v1", input_identity, CHUNK_CACHE_KEY, 13,
+        range_time_shift_13, raw_correction_source, range_source,
+    )
+    if not array_cache_matches(_directory, range_cache_13, _fingerprint, _shape):
         tau_13, iq_bias_13 = compress_chunk_to_file(
             13, raw_tau_13, range_time_shift_13, range_cache_13
         )
+        save_cache_fingerprint(_directory, _fingerprint)
+    else:
+        tau_13 = raw_tau_13[:_shape[1]] + range_time_shift_13
+        iq_bias_13 = (float("nan"), float("nan"))
     range_compressed_13 = open_array(range_cache_13)
     return iq_bias_13, range_cache_13, range_compressed_13, tau_13
 
@@ -325,22 +349,35 @@ def _(
 @app.cell
 def _(
     CACHE_ROOT,
+    CHUNK_CACHE_KEY,
+    array_cache_matches,
+    cache_fingerprint,
     compress_chunk_to_file,
+    eta_14,
     input_identity,
-    mo,
     open_array,
     range_source,
     range_time_shift_14,
+    raw_correction_source,
     raw_tau_14,
+    save_cache_fingerprint,
+    transmitted_pulse_samples,
 ):
-    with mo.persistent_cache(
-        name="merge-range-compression-14", save_path=CACHE_ROOT, pin_modules=True
-    ):
-        input_identity, range_source
-        range_cache_14 = f"{CACHE_ROOT}/range-compression-14/data.npy"
+    _directory = f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/range-compression-14"
+    range_cache_14 = f"{_directory}/data.npy"
+    _shape = (len(eta_14), len(raw_tau_14) - transmitted_pulse_samples + 1)
+    _fingerprint = cache_fingerprint(
+        "pair-range-v1", input_identity, CHUNK_CACHE_KEY, 14,
+        range_time_shift_14, raw_correction_source, range_source,
+    )
+    if not array_cache_matches(_directory, range_cache_14, _fingerprint, _shape):
         tau_14, iq_bias_14 = compress_chunk_to_file(
             14, raw_tau_14, range_time_shift_14, range_cache_14
         )
+        save_cache_fingerprint(_directory, _fingerprint)
+    else:
+        tau_14 = raw_tau_14[:_shape[1]] + range_time_shift_14
+        iq_bias_14 = (float("nan"), float("nan"))
     range_compressed_14 = open_array(range_cache_14)
     return iq_bias_14, range_cache_14, range_compressed_14, tau_14
 
@@ -359,6 +396,7 @@ def _(mo):
 @app.cell
 def _(
     CACHE_ROOT,
+    CHUNK_CACHE_KEY,
     Path,
     az_sample_freq,
     doppler_centroid_estimation,
@@ -408,10 +446,14 @@ def _(
         )
 
     with mo.persistent_cache(
-        name="range-aligned-13-14", save_path=CACHE_ROOT, pin_modules=True
+        name="range-aligned",
+        save_path=f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}",
+        pin_modules=True,
     ):
         input_identity, doppler_source, range_cache_13, range_cache_14
-        combined_range_cache = f"{CACHE_ROOT}/range-aligned-13-14/data.npy"
+        combined_range_cache = (
+            f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/range-aligned/data.npy"
+        )
         common_tau, combined_eta, alignment_summary = _combine_to_file(
             combined_range_cache
         )
@@ -439,6 +481,7 @@ def _(mo):
 @app.cell
 def _(
     CACHE_ROOT,
+    CHUNK_CACHE_KEY,
     PRI,
     az_sample_freq,
     doppler_centroid_estimation,
@@ -470,7 +513,9 @@ def _(
         return _estimates
 
     with mo.persistent_cache(
-        name="doppler-centroid-13-14", save_path=CACHE_ROOT, pin_modules=True
+        name="doppler-centroid",
+        save_path=f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}",
+        pin_modules=True,
     ):
         input_identity, doppler_source
         doppler_estimates = _estimate_doppler()
@@ -562,6 +607,7 @@ def _(
 def _(
     AZIMUTH_PROCESSING_BANDWIDTH_HZ,
     CACHE_ROOT,
+    CHUNK_CACHE_KEY,
     FOCUS_FFT_LEN,
     PRI,
     Path,
@@ -622,10 +668,14 @@ def _(
         _temporary.replace(_path)
 
     with mo.persistent_cache(
-        name="focused-slc-13-14", save_path=CACHE_ROOT, pin_modules=True
+        name="focused-merged",
+        save_path=f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}",
+        pin_modules=True,
     ):
         input_identity, focus_source, doppler_estimates, combined_range_cache
-        focused_cache_file = f"{CACHE_ROOT}/focused-slc-13-14/data.npy"
+        focused_cache_file = (
+            f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/focused-merged/data.npy"
+        )
         _focus_to_file(focused_cache_file)
     focused_slc = open_array(focused_cache_file)
     return focused_cache_file, focused_slc

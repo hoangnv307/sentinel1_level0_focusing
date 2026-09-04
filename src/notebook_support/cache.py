@@ -10,6 +10,14 @@ import numpy as np
 _FINGERPRINT_FILE = "fingerprint.sha256"
 
 
+def chunk_cache_key(chunks) -> str:
+    """Return one stable cache namespace for an unordered chunk collection."""
+    values = sorted({int(chunk) for chunk in chunks})
+    if len(values) < 2:
+        raise ValueError("At least two distinct chunks are required.")
+    return "chunks-" + "-".join(map(str, values))
+
+
 def save_array(path: str | Path, array: np.ndarray) -> None:
     """Atomically save a large array without putting it in marimo's pickle."""
     destination = Path(path)
