@@ -82,15 +82,6 @@ DCE_RANGE_BLOCK_SIZE_SAMPLES = 1000
 DCE_RANGE_ROI_STOP_SAMPLE = 17507
 DCE_UNWRAP_FFT_LENGTH = 4096
 DCE_OUTLIER_SIGMA = 2.5
-# Ambiguity index N_amb such that f_abs = f_fine + N_amb*PRF (DAD §5.4).
-# NOTE: mặc định 0 là *shortcut đã kiểm chứng* trên chính scene này, không phải
-# hệ quả của maxFdc (100 Hz đó chỉ là giới hạn biến thiên giữa các azimuth block,
-# dùng cho overlap, chứ KHÔNG chứng minh |f_DC| < PRF/2). Để pipeline L0 -> L1
-# độc lập, phải truyền geometry_dc_provider tính N_amb từ orbit/attitude thay vì
-# phụ thuộc maxFdc. Giữ bằng 0 tạm thời vì đã khớp annotation của scene S6 này;
-# khi nối geometry DC (cần solver quỹ đạo/attitude theo doppler_centroid_estimation
-# GeometryDcProvider) thì bỏ hằng này.
-DCE_AMBIGUITY_NUMBER = 0
 SRC_SEGMENT_SAMPLES = 1024
 RCMC_KERNEL_LENGTH = 16
 RCMC_PHASES = 64

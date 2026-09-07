@@ -25,7 +25,7 @@ class ProcessingBlockLayout:
 
 @dataclass(frozen=True)
 class L1OutputGeometry:
-    """Valid Stripmap SLC extent on the input PRI/range grid."""
+    """Stripmap output timeline and its valid input-grid stitching support."""
 
     azimuth_start_line: int
     azimuth_stop_line: int
@@ -176,6 +176,7 @@ def derive_output_geometry(
     slant_ranges_m,
     packet_azimuth_times_s,
     doppler_centroid_for_line,
+    geometry_doppler_for_line,
     velocity_estimator,
     layout,
     *,
@@ -187,6 +188,7 @@ def derive_output_geometry(
     fft_length=4096,
     rcmc_kernel_length=16,
     rcmc_phases=64,
+    apply_coarse_bistatic_delay_correction=False,
 ):
     """Derive the valid Stripmap SLC support from DAD §6.3.2 and §8.3.1."""
     ranges = np.asarray(slant_ranges_m, dtype=np.float64)
@@ -199,8 +201,8 @@ def derive_output_geometry(
     half_support = 0.5 * layout.matched_filter_support_samples
     extra_overlap = layout.overlap_samples - layout.matched_filter_support_samples
 
-    def state(line):
-        fdc = doppler_centroid_for_line(line)
+    def state(line, dc_provider=doppler_centroid_for_line):
+        fdc = dc_provider(line)
         velocity = velocity_estimator.evaluate_block(
             block_center_time_s=times[line],
             slant_range_m=ranges,
@@ -214,20 +216,39 @@ def derive_output_geometry(
         )
         return fdc, velocity, rate, -fdc / rate
 
-    _, _, _, first_dc_time = state(0)
-    # Eq. 8-15 selects the next PRI. The result is a one-based PRI ordinal,
-    # hence the subtraction when converting it to a zero-based array index.
-    azimuth_start = int(np.ceil(
-        half_support + extra_overlap + np.max(first_dc_time) / pri
-    )) - 1
+    _, _, _, first_focus_dc_time = state(0)
+    support_offset_lines = (
+        half_support + extra_overlap + np.max(first_focus_dc_time) / pri
+    )
+    azimuth_start = int(np.floor(support_offset_lines))
+
+    # DAD Eq. 8-15 uses nominal geometry DC at segment start, independently
+    # from the Fine DCE used by the focusing and support calculations.
+    geometry_fdc, _, geometry_rate, geometry_dc_time = state(
+        0, geometry_doppler_for_line
+    )
+    nominal_index = int(np.argmax(geometry_fdc))
+    anchor_offset_lines = (
+        0.5
+        * processing_bandwidth_hz
+        / geometry_rate[-1]
+        / pri
+        # N overlap samples span N - 1 PRI intervals on the time grid.
+        + max(extra_overlap - 1, 0)
+        + geometry_dc_time[nominal_index] / pri
+    )
+    first_output_time = float(times[0] + np.ceil(anchor_offset_lines) * pri)
 
     last_start = starts[-1]
     _, _, last_rate, last_dc_time = state(times.size - 1)
-    last_support = np.ceil(processing_bandwidth_hz / last_rate / pri)
     # Rearranged Eq. 8-19: -min(-Tmf/2 + eta_c) is equivalent
-    # to max(Tmf/2 - eta_c), evaluated per range cell at scene end.
+    # to max(Tmf/2 - eta_c). Keep Tmf continuous and quantize only the final
+    # boundary; Eq. 9-24's integer A applies to block overlap, not Eq. 8-19.
     trailing_throwaway = int(np.floor(
-        np.max(0.5 * last_support - last_dc_time / pri)
+        np.max(
+            0.5 * processing_bandwidth_hz / last_rate / pri
+            - last_dc_time / pri
+        )
     ))
     azimuth_stop = last_start + fft_length - trailing_throwaway
 
@@ -258,13 +279,21 @@ def derive_output_geometry(
             raise ValueError("RCMC leaves no valid range samples.")
         range_stop = min(range_stop, int(valid[-1]) + 1)
 
+    output_lines = azimuth_stop - azimuth_start
+    if apply_coarse_bistatic_delay_correction:
+        range_start_time = 2.0 * ranges[range_start] / speed_of_light_mps
+        range_interval = 1.0 / range_sample_frequency_hz
+        range_samples = range_stop - range_start
+        first_output_time -= 0.5 * (
+            range_start_time + 0.5 * range_samples * range_interval
+        )
     return L1OutputGeometry(
         azimuth_start,
         azimuth_stop,
         range_start,
         range_stop,
-        float(times[0] + azimuth_start * pri),
-        float(times[0] + (azimuth_stop - 1) * pri),
+        first_output_time,
+        float(first_output_time + (output_lines - 1) * pri),
     )
 
 

@@ -120,12 +120,14 @@ def _(Path):
 @app.cell
 def _(Path, s6_parameters):
     import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
+    import sentinel1_processing.geometry_doppler as geometry_doppler
 
     doppler_source = (
         Path(doppler_centroid_estimation.__file__).read_bytes(),
+        Path(geometry_doppler.__file__).read_bytes(),
         Path(s6_parameters.__file__).read_bytes(),
     )
-    return doppler_centroid_estimation, doppler_source
+    return doppler_centroid_estimation, doppler_source, geometry_doppler
 
 
 @app.cell
@@ -168,7 +170,7 @@ def _(np):
         pulse_start_frequency_hz,
         pulse_ramp_rate_hz_per_s,
         pulse_length_s,
-        output="valid",
+        output="slc",
         range_time_shift_s=0.0,
         output_array=None,
     ):
@@ -559,12 +561,25 @@ def _(
     PRI,
     c,
     np,
+    range_processing,
     range_sample_freq,
     rank,
     raw_len_range_line,
     selection,
+    sentinel1decoder,
     suppressed_data_time,
 ):
+    _swl_code = round(
+        float(selection["SWL"].iloc[0]) * sentinel1decoder.constants.F_REF
+    )
+    _expected_samples = range_processing.sample_count.rgdec9_stage3_rx_samples(
+        _swl_code
+    )
+    if raw_len_range_line != _expected_samples:
+        raise ValueError(
+            f"PDU Stage-3 sample count is {_expected_samples}, "
+            f"packet contains {raw_len_range_line}."
+        )
     range_start_time = selection["SWST"].iloc[0] + suppressed_data_time
     raw_fast_time_vec_s = (
         range_start_time + np.arange(raw_len_range_line) / range_sample_freq
@@ -938,8 +953,11 @@ def _(
     PRI,
     az_sample_freq,
     doppler_centroid_estimation,
+    geometry_doppler,
+    l0file,
     packet_azimuth_times_adjacent,
     packet_azimuth_times_s,
+    wavelength_m,
 ):
     scene_start_acq_s = min(
         packet_azimuth_times_s[0], packet_azimuth_times_adjacent[0]
@@ -950,7 +968,15 @@ def _(
     doppler_centroid_estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
         prf_hz=az_sample_freq
     )
-    return doppler_centroid_estimator, scene_start_acq_s, scene_stop_acq_s
+    geometry_dc_estimator = geometry_doppler.Estimator.from_level0_product(
+        l0file, wavelength_m
+    )
+    return (
+        doppler_centroid_estimator,
+        geometry_dc_estimator,
+        scene_start_acq_s,
+        scene_stop_acq_s,
+    )
 
 
 @app.cell(hide_code=True)
@@ -972,10 +998,12 @@ def _(
     array_cache_matches,
     azimuth_pre_processing,
     cache_fingerprint,
+    c,
     chunk_pair_cache_key,
     doppler_centroid_estimation,
     doppler_centroid_estimator,
     doppler_source,
+    geometry_dc_estimator,
     input_identity,
     l0file,
     mo,
@@ -993,7 +1021,6 @@ def _(
     raw_data_correction,
     raw_slant_range_time_adjacent,
     raw_slant_range_time_vec_s_1,
-    s6_parameters,
     save_cache_fingerprint,
     scene_start_acq_s,
     scene_stop_acq_s,
@@ -1029,7 +1056,7 @@ def _(
             pulse_ramp_rate_hz_per_s=TXPRR,
             pulse_length_s=TXPL,
             range_time_shift_s=shift_s,
-            output="valid",
+            output="slc",
             output_array=output,
         )
         compressed.flush()
@@ -1104,9 +1131,9 @@ def _(
         estimates, prepared = doppler_centroid_estimator.estimate_segments(
             segments,
             dce_range_start_s=dce_range_start_s,
-            # N_amb shortcut đã kiểm chứng scene S6 (xem DCE_AMBIGUITY_NUMBER).
-            # Muốn L0->L1 độc lập: thay bằng geometry_dc_provider tính từ orbit.
-            known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
+            geometry_dc_provider=lambda time_s, range_times_s: (
+                geometry_dc_estimator.evaluate(time_s, range_times_s * c / 2.0)
+            ),
             slice_start_times_s=[scene_start_acq_s],
             last_slice_stop_time_s=scene_stop_acq_s,
             product_start_time_s=scene_start_acq_s,
@@ -1542,10 +1569,14 @@ def _(
     FOCUS_FFT_LEN,
     az_sample_freq,
     azimuth_processing,
+    c,
     doppler_centroid_for_block,
     effective_velocity_estimator,
+    geometry_dc_estimator,
     len_az_line,
     packet_azimuth_times_s,
+    range_sample_freq,
+    s6_parameters,
     slant_range_vec_m,
     wavelength_m,
 ):
@@ -1561,11 +1592,24 @@ def _(
         fft_length=FOCUS_FFT_LEN,
         extra_overlap_samples=EXTRA_AZIMUTH_PROCESSING_BLOCK_OVERLAP,
     )
-    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+    output_geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+        slant_range_vec_m,
         packet_azimuth_times_s,
-        len(slant_range_vec_m),
+        doppler_centroid_for_block,
+        lambda line: geometry_dc_estimator.evaluate(
+            packet_azimuth_times_s[line], slant_range_vec_m
+        ),
+        effective_velocity_estimator,
         azimuth_block_layout,
+        wavelength_m=wavelength_m,
+        speed_of_light_mps=c,
         azimuth_sample_period_s=1.0 / az_sample_freq,
+        range_sample_frequency_hz=range_sample_freq,
+        processing_bandwidth_hz=AZIMUTH_PROCESSING_BANDWIDTH_HZ,
+        fft_length=FOCUS_FFT_LEN,
+        rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
+        rcmc_phases=s6_parameters.RCMC_PHASES,
+        apply_coarse_bistatic_delay_correction=True,
     )
     return azimuth_block_layout, output_geometry
 

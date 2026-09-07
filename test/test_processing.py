@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 import matplotlib.pyplot as plt
 import numpy as np
 import sentinel1decoder
+from astropy.time import Time
 from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
 import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
@@ -15,12 +16,19 @@ import sentinel1_processing.azimuth_processing as azimuth_processing
 import sentinel1_processing.dce_plotting as dce_plotting
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
 import sentinel1_processing.effective_velocity as effective_velocity
+import sentinel1_processing.geometry_doppler as geometry_doppler
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
 import sentinel1_processing.s6_parameters as s6_parameters
 
 
 class ProcessingTest(unittest.TestCase):
+    def test_pdu_stage3_sample_count_matches_s6_packets(self):
+        # PDU Tables 5.1-1/5.1-2 for RGDEC 9 (L/M=5/16, offset=97).
+        count = range_processing.sample_count.rgdec9_stage3_rx_samples
+        self.assertEqual(count(16016), 19950)
+        self.assertEqual(count(16044), 19986)
+
     def test_focus_slc_writes_into_supplied_array(self):
         source = np.zeros((4, 3), dtype=np.complex64)
         output = np.empty_like(source)
@@ -191,6 +199,7 @@ class ProcessingTest(unittest.TestCase):
             np.arange(20.0) + 1_000.0,
             np.arange(12.0),
             lambda _line: np.zeros(20),
+            lambda _line: np.zeros(20),
             SimpleNamespace(evaluate_block=lambda **_kwargs: np.full(20, 100.0)),
             layout,
             wavelength_m=0.01,
@@ -202,7 +211,7 @@ class ProcessingTest(unittest.TestCase):
             rcmc_kernel_length=16,
         )
 
-        self.assertEqual(geometry.shape, (12, 5))
+        self.assertEqual(geometry.shape, (11, 5))
         self.assertEqual(geometry.azimuth_stop_line, 12)
         self.assertEqual(geometry.range_start_sample, 7)
         self.assertEqual(geometry.range_stop_sample, 12)
@@ -215,7 +224,7 @@ class ProcessingTest(unittest.TestCase):
             support_probe_indices=np.array([0]),
             support_probe_samples=(10,),
         )
-        fdc = np.r_[np.full(10, 2.0), np.full(10, 4.0)]
+        fdc = np.r_[np.full(10, 1.5), np.full(10, 4.0)]
         rate = np.r_[np.full(10, 2.0), np.ones(10)]
         with (
             patch.object(
@@ -233,6 +242,7 @@ class ProcessingTest(unittest.TestCase):
                 np.arange(20.0) + 1_000.0,
                 np.arange(40.0),
                 lambda _line: fdc,
+                lambda _line: np.full(20, -0.5),
                 SimpleNamespace(evaluate_block=lambda **_kwargs: np.full(20, 1e9)),
                 layout,
                 wavelength_m=1e-6,
@@ -244,8 +254,13 @@ class ProcessingTest(unittest.TestCase):
                 rcmc_kernel_length=1,
             )
 
-        self.assertEqual(geometry.azimuth_start_line, 5)
+        self.assertEqual(geometry.azimuth_start_line, 6)
         self.assertEqual(geometry.azimuth_stop_line, 27)
+        self.assertEqual(geometry.first_zero_doppler_time_s, 7.0)
+        self.assertEqual(geometry.last_zero_doppler_time_s, 27.0)
+        anchor_time = 6.25
+        self.assertLess(geometry.first_zero_doppler_time_s - 1.0, anchor_time)
+        self.assertLessEqual(anchor_time, geometry.first_zero_doppler_time_s)
 
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
@@ -470,6 +485,9 @@ class ProcessingTest(unittest.TestCase):
         estimator = doppler_centroid_estimation.Estimator(
             1.0 / float(selected["PRI"].iloc[0]), config
         )
+        geometry_estimator = geometry_doppler.Estimator.from_level0_product(
+            l0file, s6_parameters.RADAR_WAVELENGTH_M
+        )
         first_time_s = segments[0].azimuth_times_s[0]
         last_time_s = segments[-1].azimuth_times_s[-1] + float(
             selected["PRI"].iloc[0]
@@ -477,7 +495,14 @@ class ProcessingTest(unittest.TestCase):
         estimates = estimator.estimate_segments(
             segments,
             dce_range_start_s=native_axes[13][0][0],
-            known_ambiguity_number=0,
+            geometry_dc_provider=lambda time_s, range_times_s: (
+                geometry_estimator.evaluate(
+                    time_s,
+                    range_times_s
+                    * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
+                    / 2.0,
+                )
+            ),
             slice_start_times_s=[first_time_s],
             last_slice_stop_time_s=last_time_s,
             product_start_time_s=first_time_s,
@@ -543,6 +568,9 @@ class ProcessingTest(unittest.TestCase):
             slant_ranges_m,
             prepared.azimuth_times_s,
             doppler_for_line,
+            lambda line: geometry_estimator.evaluate(
+                prepared.azimuth_times_s[line], slant_ranges_m
+            ),
             velocity,
             layout,
             wavelength_m=s6_parameters.RADAR_WAVELENGTH_M,
@@ -553,6 +581,7 @@ class ProcessingTest(unittest.TestCase):
             fft_length=s6_parameters.FOCUS_FFT_LENGTH,
             rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
             rcmc_phases=s6_parameters.RCMC_PHASES,
+            apply_coarse_bistatic_delay_correction=True,
         )
         image_info = annotation_root.find("./imageAnnotation/imageInformation")
         self.assertEqual(geometry.shape, (
@@ -564,6 +593,43 @@ class ProcessingTest(unittest.TestCase):
             float(image_info.findtext("slantRangeTime")),
             places=15,
         )
+        self.assertAlmostEqual(
+            geometry.first_zero_doppler_time_s,
+            Time(
+                image_info.findtext("productFirstLineUtcTime"),
+                format="isot",
+                scale="utc",
+            ).gps,
+            delta=2e-6,
+        )
+        self.assertAlmostEqual(
+            geometry.last_zero_doppler_time_s,
+            Time(
+                image_info.findtext("productLastLineUtcTime"),
+                format="isot",
+                scale="utc",
+            ).gps,
+            delta=2e-6,
+        )
+
+        first_dc = annotation[0]
+        geometry_times_s = np.array([
+            float(point.findtext("slantRangeTime"))
+            for point in first_dc.findall("./fineDceList/fineDce")[::9]
+        ])
+        actual_geometry_dc = geometry_estimator.evaluate(
+            Time(first_dc.findtext("azimuthTime"), format="isot", scale="utc").gps,
+            geometry_times_s * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS / 2.0,
+            n_control_points=3,
+        )
+        geometry_coefficients = np.fromstring(
+            first_dc.findtext("geometryDcPolynomial"), sep=" "
+        )
+        expected_geometry_dc = np.polynomial.polynomial.polyval(
+            geometry_times_s - float(first_dc.findtext("t0")),
+            geometry_coefficients,
+        )
+        np.testing.assert_allclose(actual_geometry_dc, expected_geometry_dc, atol=0.25)
 
     def test_segment_dce_grid_is_independent_of_union_buffer(self):
         prf_hz = 100.0
@@ -668,7 +734,7 @@ class ProcessingTest(unittest.TestCase):
         )
         self.assertEqual(
             range_processing.__all__,
-            ["reference_function", "dependent_gain", "swst_bias"],
+            ["reference_function", "dependent_gain", "sample_count", "swst_bias"],
         )
         self.assertEqual(
             azimuth_processing.__all__,
@@ -710,8 +776,21 @@ class ProcessingTest(unittest.TestCase):
         matched_filter = np.conjugate(replica[::-1]) / np.linalg.norm(replica)
         same = np.convolve(data[0], matched_filter, mode="same")
         valid = np.convolve(data[0], matched_filter, mode="valid")
-        np.testing.assert_allclose(result[0], valid[:-1], rtol=2e-6, atol=2e-6)
-        np.testing.assert_array_equal(result_times, times[:12])
+        np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
+        np.testing.assert_array_equal(result_times, times[:13])
+
+        slc_result, slc_times = azimuth_pre_processing.range.compression.compress(
+            data,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            range_reference_function=reference_function,
+            output="slc",
+        )
+        np.testing.assert_allclose(slc_result, result[:, :-1])
+        np.testing.assert_array_equal(slc_times, times[:12])
 
         supplied_output = np.empty_like(result)
         supplied_result, _ = azimuth_pre_processing.range.compression.compress(
@@ -737,7 +816,7 @@ class ProcessingTest(unittest.TestCase):
             pulse_length_s=1.0,
             range_time_shift_s=-0.125,
         )
-        np.testing.assert_array_equal(shifted_times, times[:12] - 0.125)
+        np.testing.assert_array_equal(shifted_times, times[:13] - 0.125)
         self.assertFalse(np.allclose(shifted, result))
 
         same_result, same_times = azimuth_pre_processing.range.compression.compress(

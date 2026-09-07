@@ -46,17 +46,20 @@ def extract_valid_samples(
     n_range = raw_times.size
     same_start = (transmitted_pulse_samples - 1) // 2
     if output == "valid":
+        output_length = n_range - transmitted_pulse_samples + 1
+        return filtered_lines[:, transmitted_pulse_samples - 1:n_range], raw_times[:output_length]
+    if output == "slc":
         data_slice = slice(transmitted_pulse_samples - 1, n_range - 1)
         # The matched-filter peak for zero delay is at M - 1.  Removing that
         # implementation delay must not also shift the physical range axis.
-        # DAD §6.2.2 treats SWL as a half-open interval: N received sample
-        # periods minus M replica-support periods leaves N - M output periods.
+        # Keep the Sentinel SLC endpoint convention explicit instead of
+        # changing the meaning of generic discrete valid convolution.
         output_length = n_range - transmitted_pulse_samples
         return filtered_lines[:, data_slice], raw_times[:output_length]
     if output == "same":
         data_slice = slice(same_start, same_start + n_range)
         return filtered_lines[:, data_slice], raw_times
-    raise ValueError("output must be 'valid' or 'same'.")
+    raise ValueError("output must be 'valid', 'slc', or 'same'.")
 
 
 def compress(
@@ -96,7 +99,13 @@ def compress(
         reference = reference * np.exp(
             2.0j * np.pi * fftfreq(fft_length, d=1.0 / sample_rate_hz) * time_shift
         )
-    output_length = n_range - num_tx_samples if output == "valid" else n_range
+    output_length = (
+        n_range - num_tx_samples + 1
+        if output == "valid"
+        else n_range - num_tx_samples
+        if output == "slc"
+        else n_range
+    )
     expected_shape = (n_azimuth, output_length)
     if output_array is None:
         compressed = np.empty(expected_shape, dtype=np.complex64)

@@ -70,6 +70,7 @@ def _(Path):
     import sentinel1_processing.azimuth_processing as azimuth_processing
     import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
     import sentinel1_processing.effective_velocity as effective_velocity
+    import sentinel1_processing.geometry_doppler as geometry_doppler
     import sentinel1_processing.range_processing as range_processing
     import sentinel1_processing.raw_data_correction as raw_data_correction
     import sentinel1_processing.s6_parameters as s6_parameters
@@ -86,6 +87,7 @@ def _(Path):
     raw_correction_source = Path(raw_data_correction.__file__).read_bytes()
     doppler_source = (
         Path(doppler_centroid_estimation.__file__).read_bytes(),
+        Path(geometry_doppler.__file__).read_bytes(),
         Path(s6_parameters.__file__).read_bytes(),
     )
     _focus_roots = (Path(azimuth_processing.__file__).parent,)
@@ -104,6 +106,7 @@ def _(Path):
         doppler_source,
         effective_velocity,
         focus_source,
+        geometry_doppler,
         range_processing,
         range_source,
         raw_correction_source,
@@ -184,12 +187,23 @@ def _(
     range_processing,
     range_sample_freq,
     s6_parameters,
+    sentinel1decoder,
     suppressed_data_time,
 ):
     SWST_BIAS_S = s6_parameters.SWST_BIAS_S
 
     def _axes(metadata):
         _count = 2 * int(metadata["Number of Quads"].iloc[0])
+        _swl_code = round(
+            float(metadata["SWL"].iloc[0]) * sentinel1decoder.constants.F_REF
+        )
+        _expected = range_processing.sample_count.rgdec9_stage3_rx_samples(
+            _swl_code
+        )
+        if _count != _expected:
+            raise ValueError(
+                f"PDU Stage-3 sample count is {_expected}, packet contains {_count}."
+            )
         _raw_tau = (
             metadata["Rank"].iloc[0] * PRI
             + metadata["SWST"].iloc[0]
@@ -289,6 +303,7 @@ def _(
                 iq_bias=_iq_bias,
                 range_reference_function=range_reference_function,
                 range_time_shift_s=range_time_shift_s,
+                output="slc",
                 output_array=_output,
             )
         )
@@ -482,16 +497,23 @@ def _(
     CHUNK_CACHE_KEY,
     PRI,
     az_sample_freq,
+    c,
     doppler_centroid_estimation,
     doppler_source,
+    geometry_doppler,
     input_identity,
+    l0file,
     make_segments,
     mo,
     raw_tau_13,
     s6_parameters,
+    wavelength_m,
 ):
     doppler_estimator = doppler_centroid_estimation.Estimator.for_stripmap_s6(
         prf_hz=az_sample_freq
+    )
+    geometry_dc_estimator = geometry_doppler.Estimator.from_level0_product(
+        l0file, wavelength_m
     )
 
     def _estimate_doppler():
@@ -501,7 +523,9 @@ def _(
         _estimates = doppler_estimator.estimate_segments(
             _segments,
             dce_range_start_s=float(raw_tau_13[0]),
-            known_ambiguity_number=s6_parameters.DCE_AMBIGUITY_NUMBER,
+            geometry_dc_provider=lambda time_s, range_times_s: (
+                geometry_dc_estimator.evaluate(time_s, range_times_s * c / 2.0)
+            ),
             slice_start_times_s=[_start],
             last_slice_stop_time_s=_stop,
             product_start_time_s=_start,
@@ -517,7 +541,7 @@ def _(
     ):
         input_identity, doppler_source
         doppler_estimates = _estimate_doppler()
-    return doppler_estimates, doppler_estimator
+    return doppler_estimates, doppler_estimator, geometry_dc_estimator
 
 
 @app.cell
@@ -567,6 +591,7 @@ def _(
     combined_eta,
     common_tau,
     doppler_centroid_for_line,
+    geometry_dc_estimator,
     range_sample_freq,
     s6_parameters,
     velocity_estimator,
@@ -591,6 +616,9 @@ def _(
         slant_ranges_m,
         combined_eta,
         doppler_centroid_for_line,
+        lambda line: geometry_dc_estimator.evaluate(
+            combined_eta[line], slant_ranges_m
+        ),
         velocity_estimator,
         focus_layout,
         wavelength_m=wavelength_m,
@@ -601,6 +629,7 @@ def _(
         fft_length=FOCUS_FFT_LEN,
         rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
         rcmc_phases=s6_parameters.RCMC_PHASES,
+        apply_coarse_bistatic_delay_correction=True,
     )
     return (
         AZIMUTH_PROCESSING_BANDWIDTH_HZ,
