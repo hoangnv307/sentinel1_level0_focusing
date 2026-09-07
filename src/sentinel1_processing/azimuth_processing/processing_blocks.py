@@ -172,6 +172,98 @@ def calculate_layout(
     )
 
 
+def derive_output_geometry(
+    slant_ranges_m,
+    packet_azimuth_times_s,
+    doppler_centroid_for_line,
+    velocity_estimator,
+    layout,
+    *,
+    wavelength_m,
+    speed_of_light_mps,
+    azimuth_sample_period_s,
+    range_sample_frequency_hz,
+    processing_bandwidth_hz,
+    fft_length=4096,
+    rcmc_kernel_length=16,
+    rcmc_phases=64,
+):
+    """Derive the valid Stripmap SLC support from DAD §6.3.2 and §8.3.1."""
+    ranges = np.asarray(slant_ranges_m, dtype=np.float64)
+    times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
+    starts = list(range(0, times.size - fft_length + 1, layout.step_samples))
+    if not starts:
+        raise ValueError("Input must contain one complete azimuth FFT block.")
+
+    pri = float(azimuth_sample_period_s)
+    half_support = 0.5 * layout.matched_filter_support_samples
+    extra_overlap = layout.overlap_samples - layout.matched_filter_support_samples
+
+    def state(line):
+        fdc = doppler_centroid_for_line(line)
+        velocity = velocity_estimator.evaluate_block(
+            block_center_time_s=times[line],
+            slant_range_m=ranges,
+            fdc_hz=fdc,
+            azimuth_bandwidth_hz=processing_bandwidth_hz,
+            n_control_points=9,
+            range_polynomial_degree=2,
+        )
+        rate = azimuth_compression.fm_rate_magnitude(
+            ranges, velocity, fdc, wavelength_m
+        )
+        return fdc, velocity, -fdc / rate
+
+    _, _, first_dc_time = state(0)
+    azimuth_start = int(np.floor(
+        half_support + extra_overlap + np.max(first_dc_time) / pri
+    ))
+
+    last_start = starts[-1]
+    last_center = last_start + (fft_length - 1) // 2
+    _, _, last_dc_time = state(last_center)
+    trailing_throwaway = int(np.floor(
+        half_support - np.max(last_dc_time) / pri
+    ))
+    azimuth_stop = last_start + fft_length - trailing_throwaway
+
+    offsets, _ = range_cell_migration_correction.build_interpolation_table(
+        rcmc_kernel_length, rcmc_phases
+    )
+    range_start = int(-offsets[0])
+    range_stop = ranges.size
+    baseband = np.fft.fftshift(np.fft.fftfreq(fft_length, d=pri))
+    spacing = speed_of_light_mps / (2.0 * range_sample_frequency_hz)
+    for start in starts:
+        center = start + (fft_length - 1) // 2
+        fdc, velocity, _ = state(center)
+        frequency = np.maximum(
+            np.abs(baseband[0] + fdc),
+            np.abs(baseband[-1] + fdc),
+        )
+        d = np.sqrt(np.maximum(
+            1.0 - (wavelength_m * frequency / (2.0 * velocity)) ** 2,
+            1e-15,
+        ))
+        source = (ranges / d - ranges[0]) / spacing
+        base = np.floor(source).astype(np.int64)
+        phase = np.floor((source - base) * rcmc_phases + 0.5).astype(np.int64)
+        base += phase == rcmc_phases
+        valid = np.flatnonzero(base + offsets[-1] < ranges.size)
+        if valid.size == 0:
+            raise ValueError("RCMC leaves no valid range samples.")
+        range_stop = min(range_stop, int(valid[-1]) + 1)
+
+    return L1OutputGeometry(
+        azimuth_start,
+        azimuth_stop,
+        range_start,
+        range_stop,
+        float(times[0] + azimuth_start * pri),
+        float(times[0] + (azimuth_stop - 1) * pri),
+    )
+
+
 def focus_block(
     block,
     doppler_centroid_hz,
@@ -288,8 +380,16 @@ def focus_slc(
         rcmc_kernel_length, rcmc_phases
     )
 
-    for start in range(0, range_compressed.shape[0], layout.step_samples):
-        real_length = min(fft_length, range_compressed.shape[0] - start)
+    block_starts = range(
+        0,
+        range_compressed.shape[0] - fft_length + 1,
+        layout.step_samples,
+    )
+    if not block_starts:
+        raise ValueError("Input must contain one complete azimuth FFT block.")
+    last_start = block_starts[-1]
+    for start in block_starts:
+        real_length = fft_length
         center = start + (real_length - 1) // 2
         doppler_centroid_hz = doppler_centroid_for_line(center)
         velocity_mps = velocity_estimator.evaluate_block(
@@ -317,7 +417,7 @@ def focus_slc(
         )
 
         first = start == 0
-        last = start + real_length >= range_compressed.shape[0]
+        last = start == last_start
         keep0 = 0 if first else left_throw
         keep1 = real_length if last else fft_length - right_throw
         global0 = max(start + keep0, geometry.azimuth_start_line)
@@ -339,6 +439,7 @@ __all__ = [
     "ProcessingBlockLayout",
     "L1OutputGeometry",
     "calculate_layout",
+    "derive_output_geometry",
     "focus_block",
     "focus_slc",
 ]

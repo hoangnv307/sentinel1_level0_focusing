@@ -40,16 +40,18 @@ def extract_valid_samples(
     raw_slant_range_times_s,
     transmitted_pulse_samples,
     output,
+    discard_trailing_sample=False,
 ):
     """Return the valid or same-size part of the range-compressed lines."""
     raw_times = np.asarray(raw_slant_range_times_s)
     n_range = raw_times.size
     same_start = (transmitted_pulse_samples - 1) // 2
     if output == "valid":
-        data_slice = slice(transmitted_pulse_samples - 1, n_range)
+        stop = n_range - int(discard_trailing_sample)
+        data_slice = slice(transmitted_pulse_samples - 1, stop)
         # The matched-filter peak for zero delay is at M - 1.  Removing that
         # implementation delay must not also shift the physical range axis.
-        output_length = n_range - transmitted_pulse_samples + 1
+        output_length = stop - transmitted_pulse_samples + 1
         return filtered_lines[:, data_slice], raw_times[:output_length]
     if output == "same":
         data_slice = slice(same_start, same_start + n_range)
@@ -70,6 +72,7 @@ def compress(
     iq_bias=0.0j,
     range_reference_function=None,
     range_time_shift_s=0.0,
+    discard_trailing_sample=False,
     output_array=None,
 ):
     """Run the Range Compression steps from DAD Section 6.2.2."""
@@ -94,7 +97,11 @@ def compress(
         reference = reference * np.exp(
             2.0j * np.pi * fftfreq(fft_length, d=1.0 / sample_rate_hz) * time_shift
         )
-    output_length = n_range - num_tx_samples + 1 if output == "valid" else n_range
+    output_length = (
+        n_range - num_tx_samples + 1 - int(discard_trailing_sample)
+        if output == "valid"
+        else n_range
+    )
     expected_shape = (n_azimuth, output_length)
     if output_array is None:
         compressed = np.empty(expected_shape, dtype=np.complex64)
@@ -119,6 +126,7 @@ def compress(
             np.asarray(raw_slant_range_times_s) + time_shift,
             num_tx_samples,
             output,
+            discard_trailing_sample,
         )
 
     return compressed, output_times

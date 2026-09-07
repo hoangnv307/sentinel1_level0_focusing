@@ -275,7 +275,7 @@ def _(
         _temporary = _path.with_suffix(f"{_path.suffix}.tmp")
         _shape = (
             _radar_data.shape[0],
-            _radar_data.shape[1] - transmitted_pulse_samples + 1,
+            _radar_data.shape[1] - transmitted_pulse_samples,
         )
         _output = np.lib.format.open_memmap(
             _temporary, mode="w+", dtype=np.complex64, shape=_shape
@@ -291,6 +291,7 @@ def _(
                 iq_bias=_iq_bias,
                 range_reference_function=range_reference_function,
                 range_time_shift_s=range_time_shift_s,
+                discard_trailing_sample=True,
                 output_array=_output,
             )
         )
@@ -329,9 +330,9 @@ def _(
 ):
     _directory = f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/range-compression-13"
     range_cache_13 = f"{_directory}/data.npy"
-    _shape = (len(eta_13), len(raw_tau_13) - transmitted_pulse_samples + 1)
+    _shape = (len(eta_13), len(raw_tau_13) - transmitted_pulse_samples)
     _fingerprint = cache_fingerprint(
-        "pair-range-v1", input_identity, CHUNK_CACHE_KEY, 13,
+        "pair-range-v2", input_identity, CHUNK_CACHE_KEY, 13,
         range_time_shift_13, raw_correction_source, range_source,
     )
     if not array_cache_matches(_directory, range_cache_13, _fingerprint, _shape):
@@ -365,9 +366,9 @@ def _(
 ):
     _directory = f"{CACHE_ROOT}/{CHUNK_CACHE_KEY}/range-compression-14"
     range_cache_14 = f"{_directory}/data.npy"
-    _shape = (len(eta_14), len(raw_tau_14) - transmitted_pulse_samples + 1)
+    _shape = (len(eta_14), len(raw_tau_14) - transmitted_pulse_samples)
     _fingerprint = cache_fingerprint(
-        "pair-range-v1", input_identity, CHUNK_CACHE_KEY, 14,
+        "pair-range-v2", input_identity, CHUNK_CACHE_KEY, 14,
         range_time_shift_14, raw_correction_source, range_source,
     )
     if not array_cache_matches(_directory, range_cache_14, _fingerprint, _shape):
@@ -409,7 +410,6 @@ def _(
     open_array,
     range_cache_13,
     range_cache_14,
-    s6_parameters,
     tau_13,
     tau_14,
 ):
@@ -427,8 +427,6 @@ def _(
         _prepared = doppler_centroid_estimation.prepare_segments(
             make_segments(),
             prf_hz=az_sample_freq,
-            common_range_start_s=s6_parameters.SLC_RANGE_START_TIME_S,
-            common_range_samples=s6_parameters.SLC_RANGE_SAMPLES,
         )
         _path = Path(destination)
         _path.parent.mkdir(parents=True, exist_ok=True)
@@ -573,7 +571,7 @@ def _(
     combined_eta,
     common_tau,
     doppler_centroid_for_line,
-    np,
+    range_sample_freq,
     s6_parameters,
     velocity_estimator,
     wavelength_m,
@@ -593,21 +591,20 @@ def _(
         fft_length=FOCUS_FFT_LEN,
         extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
     )
-    _first_line = int(np.rint(
-        s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S * az_sample_freq
-    ))
-    _first_time = (
-        combined_eta[0] + s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S
-    )
-    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry(
-        _first_line,
-        _first_line + s6_parameters.SLC_AZIMUTH_LINES,
-        0,
-        len(slant_ranges_m),
-        _first_time,
-        _first_time
-        + (s6_parameters.SLC_AZIMUTH_LINES - 1)
-        * s6_parameters.SLC_AZIMUTH_TIME_INTERVAL_S,
+    output_geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+        slant_ranges_m,
+        combined_eta,
+        doppler_centroid_for_line,
+        velocity_estimator,
+        focus_layout,
+        wavelength_m=wavelength_m,
+        speed_of_light_mps=c,
+        azimuth_sample_period_s=1.0 / az_sample_freq,
+        range_sample_frequency_hz=range_sample_freq,
+        processing_bandwidth_hz=AZIMUTH_PROCESSING_BANDWIDTH_HZ,
+        fft_length=FOCUS_FFT_LEN,
+        rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
+        rcmc_phases=s6_parameters.RCMC_PHASES,
     )
     return (
         AZIMUTH_PROCESSING_BANDWIDTH_HZ,

@@ -1,6 +1,5 @@
 from pathlib import Path
 from dataclasses import replace
-from datetime import datetime
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -15,6 +14,7 @@ import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
 import sentinel1_processing.azimuth_processing as azimuth_processing
 import sentinel1_processing.dce_plotting as dce_plotting
 import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
+import sentinel1_processing.effective_velocity as effective_velocity
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
 import sentinel1_processing.s6_parameters as s6_parameters
@@ -179,6 +179,34 @@ class ProcessingTest(unittest.TestCase):
         self.assertEqual(geometry.azimuth_start_line, 6)
         self.assertEqual(geometry.azimuth_stop_line, 89)
 
+    def test_output_geometry_uses_complete_blocks_and_rcmc_support(self):
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=2,
+            overlap_samples=2,
+            step_samples=2,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(2,),
+        )
+        geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+            np.arange(20.0) + 1_000.0,
+            np.arange(12.0),
+            lambda _line: np.zeros(20),
+            SimpleNamespace(evaluate_block=lambda **_kwargs: np.full(20, 100.0)),
+            layout,
+            wavelength_m=0.01,
+            speed_of_light_mps=2.0,
+            azimuth_sample_period_s=1.0,
+            range_sample_frequency_hz=1.0,
+            processing_bandwidth_hz=1.0,
+            fft_length=4,
+            rcmc_kernel_length=16,
+        )
+
+        self.assertEqual(geometry.shape, (10, 5))
+        self.assertEqual(geometry.azimuth_stop_line, 11)
+        self.assertEqual(geometry.range_start_sample, 7)
+        self.assertEqual(geometry.range_stop_sample, 12)
+
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
             np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
@@ -205,18 +233,16 @@ class ProcessingTest(unittest.TestCase):
             [[1, 2, 3, 4, 0], [5, 6, 7, 8, 0], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16]],
         )
 
-        product_grid = doppler_centroid_estimation.prepare_segments(
-            [first, second],
-            prf_hz=1.0,
-            common_range_start_s=1.0,
-            common_range_samples=3,
+        short = doppler_centroid_estimation.Segment(
+            np.array([[9, 10]], dtype=np.complex64),
+            np.array([1.0, 2.0]),
+            np.array([2.0]),
+            name="short",
         )
-        cropped = np.empty((4, 3), dtype=np.complex64)
-        product_grid.align_into(cropped)
-        np.testing.assert_array_equal(
-            cropped,
-            [[2, 3, 4], [6, 7, 8], [9, 10, 11], [13, 14, 15]],
+        dad_buffer = doppler_centroid_estimation.prepare_segments(
+            [first, short], prf_hz=1.0
         )
+        self.assertEqual(dad_buffer.num_range_samples, 5)
 
         fractional = doppler_centroid_estimation.Segment(
             np.ones((1, 2), dtype=np.complex64),
@@ -322,39 +348,6 @@ class ProcessingTest(unittest.TestCase):
             rtol=0.0,
         )
 
-    def test_s6_output_geometry_contract_matches_annotation(self):
-        root = ElementTree.parse(
-            Path(__file__).parents[1]
-            / "references"
-            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
-        ).getroot()
-        info = root.find("./imageAnnotation/imageInformation")
-        first = datetime.fromisoformat(info.findtext("productFirstLineUtcTime"))
-        last = datetime.fromisoformat(info.findtext("productLastLineUtcTime"))
-        sensing_start = datetime.fromisoformat(
-            info.findtext("./sliceList/slice/sensingStartTime")
-        )
-
-        self.assertEqual(
-            (s6_parameters.SLC_AZIMUTH_LINES, s6_parameters.SLC_RANGE_SAMPLES),
-            (int(info.findtext("numberOfLines")), int(info.findtext("numberOfSamples"))),
-        )
-        self.assertEqual(
-            s6_parameters.SLC_RANGE_START_TIME_S,
-            float(info.findtext("slantRangeTime")),
-        )
-        self.assertAlmostEqual(
-            s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S,
-            (first - sensing_start).total_seconds(),
-            places=6,
-        )
-        self.assertAlmostEqual(
-            (last - first).total_seconds(),
-            (s6_parameters.SLC_AZIMUTH_LINES - 1)
-            * s6_parameters.SLC_AZIMUTH_TIME_INTERVAL_S,
-            places=6,
-        )
-
     def test_s6_estimated_fine_dc_matches_l1_annotation(self):
         project = Path(__file__).parents[1]
         raw_path = (
@@ -419,9 +412,13 @@ class ProcessingTest(unittest.TestCase):
                 round(delta_samples) / sample_rate_hz
                 - (range_times[0] - common_start_s)
             )
+            expected_samples = range_times.size - pulse_samples
+            cached = np.load(cache_paths[chunk], mmap_mode="r")
+            if cached.shape[1] < expected_samples:
+                self.fail(f"Cache range-compression chunk {chunk} bị thiếu mẫu.")
             segments.append(doppler_centroid_estimation.Segment(
-                np.load(cache_paths[chunk], mmap_mode="r"),
-                range_times[:-pulse_samples + 1] + fractional_shift_s,
+                cached[:, :expected_samples],
+                range_times[:expected_samples] + fractional_shift_s,
                 azimuth_times,
                 name=f"chunk-{chunk}",
             ))
@@ -447,10 +444,13 @@ class ProcessingTest(unittest.TestCase):
             product_stop_time_s=last_time_s,
             zero_dop_minus_acq_time_s=0.0,
         )
-        annotation = ElementTree.parse(
+        annotation_root = ElementTree.parse(
             project / "references/"
             "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
-        ).getroot().findall("./dopplerCentroid/dcEstimateList/dcEstimate")
+        ).getroot()
+        annotation = annotation_root.findall(
+            "./dopplerCentroid/dcEstimateList/dcEstimate"
+        )
 
         self.assertEqual(len(estimates), len(annotation))
         for record_index, (estimated, reference) in enumerate(
@@ -469,6 +469,61 @@ class ProcessingTest(unittest.TestCase):
                     s6_parameters.DCE_L1_FINE_RMSE_THRESHOLD_HZ,
                     f"DCE{record_index} Fine-DC RMSE = {rmse_hz:.3f} Hz",
                 )
+
+        prepared = doppler_centroid_estimation.prepare_segments(
+            segments, prf_hz=estimator.prf_hz
+        )
+        doppler_for_line = lambda line: estimator.evaluate_at_line(
+            estimates,
+            line_index=line,
+            azimuth_times_s=prepared.azimuth_times_s,
+            slant_range_times_s=prepared.common_slant_range_times_s,
+        )
+        velocity = effective_velocity.Estimator.from_level0_product(
+            l0file, s6_parameters.RADAR_WAVELENGTH_M
+        )
+        slant_ranges_m = (
+            prepared.common_slant_range_times_s
+            * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
+            / 2.0
+        )
+        layout = azimuth_processing.processing_blocks.calculate_layout(
+            prepared.num_azimuth_lines,
+            slant_ranges_m,
+            prepared.azimuth_times_s,
+            doppler_for_line,
+            velocity,
+            wavelength_m=s6_parameters.RADAR_WAVELENGTH_M,
+            azimuth_sample_frequency_hz=estimator.prf_hz,
+            processing_bandwidth_hz=s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ,
+            fft_length=s6_parameters.FOCUS_FFT_LENGTH,
+            extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
+        )
+        geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+            slant_ranges_m,
+            prepared.azimuth_times_s,
+            doppler_for_line,
+            velocity,
+            layout,
+            wavelength_m=s6_parameters.RADAR_WAVELENGTH_M,
+            speed_of_light_mps=sentinel1decoder.constants.SPEED_OF_LIGHT_MPS,
+            azimuth_sample_period_s=1.0 / estimator.prf_hz,
+            range_sample_frequency_hz=sample_rate_hz,
+            processing_bandwidth_hz=s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ,
+            fft_length=s6_parameters.FOCUS_FFT_LENGTH,
+            rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
+            rcmc_phases=s6_parameters.RCMC_PHASES,
+        )
+        image_info = annotation_root.find("./imageAnnotation/imageInformation")
+        self.assertEqual(geometry.shape, (
+            int(image_info.findtext("numberOfLines")),
+            int(image_info.findtext("numberOfSamples")),
+        ))
+        self.assertAlmostEqual(
+            prepared.common_slant_range_times_s[geometry.range_start_sample],
+            float(image_info.findtext("slantRangeTime")),
+            places=15,
+        )
 
     def test_segment_dce_grid_is_independent_of_union_buffer(self):
         prf_hz = 100.0
@@ -617,6 +672,19 @@ class ProcessingTest(unittest.TestCase):
         valid = np.convolve(data[0], matched_filter, mode="valid")
         np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result_times, times[:13])
+
+        dad_result, dad_times = azimuth_pre_processing.range.compression.compress(
+            data,
+            times,
+            sample_rate_hz=4.0,
+            pulse_start_frequency_hz=0.25,
+            pulse_ramp_rate_hz_per_s=0.5,
+            pulse_length_s=1.0,
+            range_reference_function=reference_function,
+            discard_trailing_sample=True,
+        )
+        np.testing.assert_allclose(dad_result, result[:, :-1])
+        np.testing.assert_array_equal(dad_times, times[:12])
 
         supplied_output = np.empty_like(result)
         supplied_result, _ = azimuth_pre_processing.range.compression.compress(

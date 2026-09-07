@@ -729,17 +729,15 @@ def prepare_segments(
     segments: Sequence[Segment],
     prf_hz: float,
     *,
-    common_range_start_s: Optional[float] = None,
-    common_range_samples: Optional[int] = None,
     range_spacing_rtol: float = 1e-6,
     azimuth_gap_tolerance_s: Optional[float] = None,
 ) -> PreparedScene:
     """Align acquisition segments to one slant-range grid.
 
-    By default the common grid covers the union of all segment grids. A product
-    grid can instead be supplied explicitly. Segments must already have their
-    fractional SWST offset corrected in the range reference function; this
-    routine applies only exact integer placement and black-fill.
+    DAD §6.2.2 sizes the buffer from the independent maximum SWL and maximum
+    SWST offset. Segments must already have their fractional SWST offset
+    corrected in the range reference function; this routine applies only exact
+    integer placement and black-fill.
 
     """
     if not segments:
@@ -765,12 +763,7 @@ def prepare_segments(
                 "implemented; this API currently handles SWST/grid-offset changes."
             )
 
-    native_start = min(float(np.asarray(seg.slant_range_times_s)[0]) for seg in segs)
-    common_start = (
-        native_start
-        if common_range_start_s is None
-        else float(common_range_start_s)
-    )
+    common_start = min(float(np.asarray(seg.slant_range_times_s)[0]) for seg in segs)
 
     alignments: list[Alignment] = []
     az_times: list[np.ndarray] = []
@@ -831,15 +824,9 @@ def prepare_segments(
         raise ValueError("Concatenated segment azimuth times are not strictly increasing.")
 
     common_length = (
-        max(
-            -alignment.integer_shift_samples + alignment.segment.num_range_samples
-            for alignment in alignments
-        )
-        if common_range_samples is None
-        else int(common_range_samples)
+        max(alignment.segment.num_range_samples for alignment in alignments)
+        + max(-alignment.integer_shift_samples for alignment in alignments)
     )
-    if common_length < 1:
-        raise ValueError("common_range_samples must be positive.")
     common_tau = common_start + np.arange(common_length, dtype=np.float64) * dt
 
     return PreparedScene(
