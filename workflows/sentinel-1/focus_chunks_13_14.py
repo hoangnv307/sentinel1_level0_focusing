@@ -409,6 +409,7 @@ def _(
     open_array,
     range_cache_13,
     range_cache_14,
+    s6_parameters,
     tau_13,
     tau_14,
 ):
@@ -424,7 +425,10 @@ def _(
 
     def _combine_to_file(destination):
         _prepared = doppler_centroid_estimation.prepare_segments(
-            make_segments(), prf_hz=az_sample_freq
+            make_segments(),
+            prf_hz=az_sample_freq,
+            common_range_start_s=s6_parameters.SLC_RANGE_START_TIME_S,
+            common_range_samples=s6_parameters.SLC_RANGE_SAMPLES,
         )
         _path = Path(destination)
         _path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,6 +573,7 @@ def _(
     combined_eta,
     common_tau,
     doppler_centroid_for_line,
+    np,
     s6_parameters,
     velocity_estimator,
     wavelength_m,
@@ -588,11 +593,21 @@ def _(
         fft_length=FOCUS_FFT_LEN,
         extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
     )
-    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
-        combined_eta,
+    _first_line = int(np.rint(
+        s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S * az_sample_freq
+    ))
+    _first_time = (
+        combined_eta[0] + s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S
+    )
+    output_geometry = azimuth_processing.processing_blocks.L1OutputGeometry(
+        _first_line,
+        _first_line + s6_parameters.SLC_AZIMUTH_LINES,
+        0,
         len(slant_ranges_m),
-        focus_layout,
-        azimuth_sample_period_s=1.0 / az_sample_freq,
+        _first_time,
+        _first_time
+        + (s6_parameters.SLC_AZIMUTH_LINES - 1)
+        * s6_parameters.SLC_AZIMUTH_TIME_INTERVAL_S,
     )
     return (
         AZIMUTH_PROCESSING_BANDWIDTH_HZ,

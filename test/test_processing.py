@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import replace
+from datetime import datetime
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -157,6 +158,27 @@ class ProcessingTest(unittest.TestCase):
         # 1 slice-overlap + 0.5 nominal-DC + 2 Tmf + 2 extra = 5.5 PRI.
         self.assertEqual(equation_8_15.azimuth_start_line, 6)
 
+    def test_output_geometry_uses_asymmetric_dc_support(self):
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=10,
+            overlap_samples=12,
+            step_samples=10,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(10,),
+        )
+        geometry = (
+            azimuth_processing.processing_blocks.L1OutputGeometry.from_focus_support(
+                np.arange(100.0),
+                3,
+                layout,
+                azimuth_sample_period_s=1.0,
+                dc_time_offsets_s=np.array([-4.0, -1.0]),
+            )
+        )
+
+        self.assertEqual(geometry.azimuth_start_line, 6)
+        self.assertEqual(geometry.azimuth_stop_line, 89)
+
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
             np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
@@ -181,6 +203,19 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_array_equal(
             output,
             [[1, 2, 3, 4, 0], [5, 6, 7, 8, 0], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16]],
+        )
+
+        product_grid = doppler_centroid_estimation.prepare_segments(
+            [first, second],
+            prf_hz=1.0,
+            common_range_start_s=1.0,
+            common_range_samples=3,
+        )
+        cropped = np.empty((4, 3), dtype=np.complex64)
+        product_grid.align_into(cropped)
+        np.testing.assert_array_equal(
+            cropped,
+            [[2, 3, 4], [6, 7, 8], [9, 10, 11], [13, 14, 15]],
         )
 
         fractional = doppler_centroid_estimation.Segment(
@@ -285,6 +320,39 @@ class ProcessingTest(unittest.TestCase):
             annotation_times,
             atol=7e-11,
             rtol=0.0,
+        )
+
+    def test_s6_output_geometry_contract_matches_annotation(self):
+        root = ElementTree.parse(
+            Path(__file__).parents[1]
+            / "references"
+            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
+        ).getroot()
+        info = root.find("./imageAnnotation/imageInformation")
+        first = datetime.fromisoformat(info.findtext("productFirstLineUtcTime"))
+        last = datetime.fromisoformat(info.findtext("productLastLineUtcTime"))
+        sensing_start = datetime.fromisoformat(
+            info.findtext("./sliceList/slice/sensingStartTime")
+        )
+
+        self.assertEqual(
+            (s6_parameters.SLC_AZIMUTH_LINES, s6_parameters.SLC_RANGE_SAMPLES),
+            (int(info.findtext("numberOfLines")), int(info.findtext("numberOfSamples"))),
+        )
+        self.assertEqual(
+            s6_parameters.SLC_RANGE_START_TIME_S,
+            float(info.findtext("slantRangeTime")),
+        )
+        self.assertAlmostEqual(
+            s6_parameters.SLC_ZERO_DOP_MINUS_ACQ_TIME_S,
+            (first - sensing_start).total_seconds(),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            (last - first).total_seconds(),
+            (s6_parameters.SLC_AZIMUTH_LINES - 1)
+            * s6_parameters.SLC_AZIMUTH_TIME_INTERVAL_S,
+            places=6,
         )
 
     def test_s6_estimated_fine_dc_matches_l1_annotation(self):

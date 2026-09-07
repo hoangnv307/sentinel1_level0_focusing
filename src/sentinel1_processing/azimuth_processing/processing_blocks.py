@@ -50,16 +50,17 @@ class L1OutputGeometry:
         *,
         azimuth_sample_period_s,
         nominal_dc_time_offset_s=0.0,
+        dc_time_offsets_s=None,
         slice_overlap_s=0.0,
         required_first_time_s=None,
         required_last_time_s=None,
     ):
         """Build the valid output timeline after azimuth-filter throwaway.
 
-        The default first line follows DAD Eq. 8-15 using the supplied nominal
-        DC offset, half the slice overlap, half the matched-filter duration and
-        the complete extra processing-block overlap. An explicit first time is
-        quantized to the next PRI; an explicit last-line time is quantized down.
+        The default first line follows DAD Eq. 8-15. When range-dependent DC
+        offsets are supplied, the first/last support follows Eq. 8-18/8-19.
+        An explicit first time is quantized to the next PRI; an explicit
+        last-line time is quantized down.
         """
         times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
         if times.ndim != 1 or times.size < 2 or np.any(np.diff(times) <= 0):
@@ -75,18 +76,25 @@ class L1OutputGeometry:
         if slice_overlap_s < 0:
             raise ValueError("slice_overlap_s must be non-negative.")
 
-        # DAD Eq. 8-15: TsliceOv/2 + eta_c,nom + Tmf/2 + TdeltaOv.
-        margin = (
+        base_margin = (
             0.5 * float(slice_overlap_s) / pri
-            + float(nominal_dc_time_offset_s) / pri
             + 0.5 * layout.matched_filter_support_samples
             + extra_overlap
         )
+        if dc_time_offsets_s is None:
+            dc_min = dc_max = float(nominal_dc_time_offset_s) / pri
+        else:
+            dc_offsets = np.asarray(dc_time_offsets_s, dtype=np.float64)
+            if dc_offsets.size == 0 or not np.all(np.isfinite(dc_offsets)):
+                raise ValueError("dc_time_offsets_s must contain finite values.")
+            dc_min = float(np.min(dc_offsets)) / pri
+            dc_max = float(np.max(dc_offsets)) / pri
 
-        lower = max(0, int(np.ceil(margin)))
+        # DAD Eq. 8-18/8-19: the leading and trailing supports are asymmetric.
+        lower = max(0, int(np.ceil(base_margin + dc_max)))
         upper = min(
             times.size,
-            int(np.floor(times.size - margin)),
+            int(np.floor(times.size - (base_margin - dc_min))),
         )
 
         if required_first_time_s is not None:

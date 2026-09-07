@@ -1783,7 +1783,7 @@ def _(
     _tx_replica_sample_count = int(np.ceil(TXPL * range_sample_freq))
     display_amplitude_scale = np.sqrt(_tx_replica_sample_count)
     valid_range_start = int(np.rint((slant_range_time_vec_s[0] - raw_slant_range_time_vec_s_1[0]) * range_sample_freq))
-    return display_amplitude_scale, valid_range_start
+    return (display_amplitude_scale,)
 
 
 @app.cell(hide_code=True)
@@ -1791,6 +1791,35 @@ def _(mo):
     mo.md(r"""
     ### 12.2 - Full SLC image
     """)
+    return
+
+
+@app.cell
+def _(colors, display_amplitude_scale, focused_image, np, plt):
+    plt.figure(figsize=(12, 12), dpi=75)
+    plt.title("Sentinel-1 Processed SAR Image - detail")
+    plt.imshow(
+        np.abs(focused_image[
+            ::10,
+            ::10,
+        ]),
+        origin="lower",
+        norm=colors.LogNorm(
+            vmin=300 / display_amplitude_scale,
+            vmax=10000 / display_amplitude_scale,
+        ),
+    )
+    # plt.imshow(
+    #     np.abs(focused_image),
+    #     origin="lower",
+    #     norm=colors.LogNorm(
+    #         vmin=300 / display_amplitude_scale,
+    #         vmax=10000 / display_amplitude_scale,
+    #     ),
+    # )
+    plt.xlabel("Down Range (samples)")
+    plt.ylabel("Cross Range (samples)")
+    plt.show()
     return
 
 
@@ -1803,20 +1832,13 @@ def _(mo):
 
 
 @app.cell
-def _(
-    colors,
-    display_amplitude_scale,
-    focused_image,
-    np,
-    plt,
-    valid_range_start,
-):
+def _(colors, display_amplitude_scale, focused_image, np, plt):
     plt.figure(figsize=(12, 12), dpi=75)
     plt.title("Sentinel-1 Processed SAR Image - detail")
     plt.imshow(
         np.abs(focused_image[
-            10000:11000,
-            6500 - valid_range_start:8000 - valid_range_start,
+            9000:10000,
+            5500:6800,
         ]),
         origin="lower",
         norm=colors.LogNorm(
@@ -1824,6 +1846,14 @@ def _(
             vmax=10000 / display_amplitude_scale,
         ),
     )
+    # plt.imshow(
+    #     np.abs(focused_image),
+    #     origin="lower",
+    #     norm=colors.LogNorm(
+    #         vmin=300 / display_amplitude_scale,
+    #         vmax=10000 / display_amplitude_scale,
+    #     ),
+    # )
     plt.xlabel("Down Range (samples)")
     plt.ylabel("Cross Range (samples)")
     plt.show()
