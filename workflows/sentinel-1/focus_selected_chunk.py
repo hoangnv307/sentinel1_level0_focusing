@@ -382,7 +382,7 @@ def _(
     )
     range_cache_file = f"{range_cache_directory}/data.npy"
     range_cache_fingerprint = cache_fingerprint(
-        "pair-range-v1",
+        "pair-range-v2",
         input_identity,
         chunk_pair_cache_key,
         selected_chunk,
@@ -396,8 +396,7 @@ def _(
         expected_shape=(
             len_az_line,
             len(raw_slant_range_time_vec_s_1)
-            - int(np.ceil(TXPL * range_sample_freq))
-            + 1,
+            - int(np.ceil(TXPL * range_sample_freq)),
         ),
     )
 
@@ -1001,7 +1000,7 @@ def _(
     slant_range_time_vec_s,
 ):
     def _dce_grid(range_times, azimuth_times, shift_s):
-        output_length = len(range_times) - int(np.ceil(TXPL * range_sample_freq)) + 1
+        output_length = len(range_times) - int(np.ceil(TXPL * range_sample_freq))
         return shift_s, (len(azimuth_times), output_length)
 
     def _process_dce_to_file(
@@ -1044,7 +1043,7 @@ def _(
         path = f"{directory}/data.npy"
         _, shape = _dce_grid(range_times, azimuth_times, shift_s)
         fingerprint = cache_fingerprint(
-            "pair-range-v1",
+            "pair-range-v2",
             input_identity,
             chunk_pair_cache_key,
             chunk,

@@ -7,6 +7,7 @@ app = marimo.App()
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -49,17 +50,17 @@ def _():
     return (
         PROJECT_ROOT,
         Path,
-        colors,
         array_cache_matches,
         cache_fingerprint,
         chunk_cache_key,
+        colors,
         notebook_started_at,
         np,
         open_array,
         perf_counter,
         plt,
-        sentinel1decoder,
         save_cache_fingerprint,
+        sentinel1decoder,
     )
 
 
@@ -99,8 +100,8 @@ def _(Path):
     return (
         azimuth_pre_processing,
         azimuth_processing,
-        doppler_source,
         doppler_centroid_estimation,
+        doppler_source,
         effective_velocity,
         focus_source,
         range_processing,
@@ -158,7 +159,6 @@ def _(chunk_cache_key, l0file, s6_parameters, sentinel1decoder):
     az_sample_freq = 1.0 / PRI
     suppressed_data_time = 320.0 / (8.0 * sentinel1decoder.constants.F_REF)
     return (
-        CHUNKS,
         CHUNK_CACHE_KEY,
         PRI,
         TXPL,
@@ -214,13 +214,11 @@ def _(
     range_time_shift_13 = _fractional_shift(raw_tau_13)
     range_time_shift_14 = _fractional_shift(raw_tau_14)
     return (
-        SWST_BIAS_S,
         eta_13,
         eta_14,
-        raw_range_count_13,
-        raw_range_count_14,
         range_time_shift_13,
         range_time_shift_14,
+        raw_range_count_14,
         raw_tau_13,
         raw_tau_14,
     )
@@ -291,7 +289,6 @@ def _(
                 iq_bias=_iq_bias,
                 range_reference_function=range_reference_function,
                 range_time_shift_s=range_time_shift_s,
-                discard_trailing_sample=True,
                 output_array=_output,
             )
         )
@@ -344,7 +341,7 @@ def _(
         tau_13 = raw_tau_13[:_shape[1]] + range_time_shift_13
         iq_bias_13 = (float("nan"), float("nan"))
     range_compressed_13 = open_array(range_cache_13)
-    return iq_bias_13, range_cache_13, range_compressed_13, tau_13
+    return iq_bias_13, range_cache_13, tau_13
 
 
 @app.cell
@@ -380,7 +377,7 @@ def _(
         tau_14 = raw_tau_14[:_shape[1]] + range_time_shift_14
         iq_bias_14 = (float("nan"), float("nan"))
     range_compressed_14 = open_array(range_cache_14)
-    return iq_bias_14, range_cache_14, range_compressed_14, tau_14
+    return iq_bias_14, range_cache_14, tau_14
 
 
 @app.cell(hide_code=True)
@@ -465,7 +462,6 @@ def _(
         alignment_summary,
         chunk_boundary_line,
         combined_eta,
-        combined_range,
         combined_range_cache,
         common_tau,
         make_segments,
@@ -521,15 +517,15 @@ def _(
     ):
         input_identity, doppler_source
         doppler_estimates = _estimate_doppler()
-    return doppler_estimator, doppler_estimates
+    return doppler_estimates, doppler_estimator
 
 
 @app.cell
 def _(
     combined_eta,
     common_tau,
-    doppler_estimator,
     doppler_estimates,
+    doppler_estimator,
     effective_velocity,
     l0file,
     wavelength_m,
@@ -705,9 +701,9 @@ def _(mo):
 def _(
     alignment_summary,
     chunk_boundary_line,
+    focus_layout,
     focused_cache_file,
     focused_slc,
-    focus_layout,
     iq_bias_13,
     iq_bias_14,
 ):
@@ -721,7 +717,7 @@ def _(
 
 
 @app.cell
-def _(chunk_boundary_line, colors, focused_slc, np, plt):
+def _(colors, focused_slc, np, plt):
     _amplitude = np.abs(focused_slc[::20, ::20])
     _positive = _amplitude[_amplitude > 0]
     _vmin = np.percentile(_positive, 5)
@@ -732,13 +728,36 @@ def _(chunk_boundary_line, colors, focused_slc, np, plt):
     plt.imshow(
         _amplitude,
         origin="lower",
-        cmap="gray",
+        cmap="viridis",
         norm=colors.LogNorm(vmin=_vmin, vmax=_vmax),
         aspect="auto",
     )
-    plt.axhline(chunk_boundary_line / 20, color="tab:red", linewidth=0.8)
+    # plt.axhline(chunk_boundary_line / 20, color="tab:red", linewidth=0.8)
     plt.xlabel("Slant range (mỗi 20 samples)")
     plt.ylabel("Azimuth (mỗi 20 lines)")
+    plt.show()
+    return
+
+
+@app.cell
+def _(colors, focused_slc, np, plt):
+    _amplitude = np.abs(focused_slc[9000:10500, 5500:6800])
+    _positive = _amplitude[_amplitude > 0]
+    _vmin = np.percentile(_positive, 2.5)
+    _vmax = np.percentile(_positive, 98)
+
+    plt.figure(figsize=(12, 12), dpi=75)
+    plt.title("Focused SLC — chunk 13 + 14-detail")
+    plt.imshow(
+        _amplitude,
+        origin="lower",
+        cmap="viridis",
+        norm=colors.LogNorm(vmin=_vmin, vmax=_vmax),
+        aspect="auto",
+    )
+    # plt.axhline(chunk_boundary_line / 20, color="tab:red", linewidth=0.8)
+    plt.xlabel("Slant range")
+    plt.ylabel("Azimuth")
     plt.show()
     return
 

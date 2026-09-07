@@ -202,10 +202,50 @@ class ProcessingTest(unittest.TestCase):
             rcmc_kernel_length=16,
         )
 
-        self.assertEqual(geometry.shape, (10, 5))
-        self.assertEqual(geometry.azimuth_stop_line, 11)
+        self.assertEqual(geometry.shape, (12, 5))
+        self.assertEqual(geometry.azimuth_stop_line, 12)
         self.assertEqual(geometry.range_start_sample, 7)
         self.assertEqual(geometry.range_stop_sample, 12)
+
+    def test_output_geometry_uses_next_pri_and_trailing_range_extreme(self):
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=10,
+            overlap_samples=12,
+            step_samples=8,
+            support_probe_indices=np.array([0]),
+            support_probe_samples=(10,),
+        )
+        fdc = np.r_[np.full(10, 2.0), np.full(10, 4.0)]
+        rate = np.r_[np.full(10, 2.0), np.ones(10)]
+        with (
+            patch.object(
+                azimuth_processing.processing_blocks.azimuth_compression,
+                "fm_rate_magnitude",
+                return_value=rate,
+            ),
+            patch.object(
+                azimuth_processing.processing_blocks.range_cell_migration_correction,
+                "build_interpolation_table",
+                return_value=(np.array([0]), np.ones((1, 1))),
+            ),
+        ):
+            geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+                np.arange(20.0) + 1_000.0,
+                np.arange(40.0),
+                lambda _line: fdc,
+                SimpleNamespace(evaluate_block=lambda **_kwargs: np.full(20, 1e9)),
+                layout,
+                wavelength_m=1e-6,
+                speed_of_light_mps=2.0,
+                azimuth_sample_period_s=1.0,
+                range_sample_frequency_hz=1.0,
+                processing_bandwidth_hz=10.0,
+                fft_length=20,
+                rcmc_kernel_length=1,
+            )
+
+        self.assertEqual(geometry.azimuth_start_line, 5)
+        self.assertEqual(geometry.azimuth_stop_line, 27)
 
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid_estimation.Segment(
@@ -670,21 +710,8 @@ class ProcessingTest(unittest.TestCase):
         matched_filter = np.conjugate(replica[::-1]) / np.linalg.norm(replica)
         same = np.convolve(data[0], matched_filter, mode="same")
         valid = np.convolve(data[0], matched_filter, mode="valid")
-        np.testing.assert_allclose(result[0], valid, rtol=2e-6, atol=2e-6)
-        np.testing.assert_array_equal(result_times, times[:13])
-
-        dad_result, dad_times = azimuth_pre_processing.range.compression.compress(
-            data,
-            times,
-            sample_rate_hz=4.0,
-            pulse_start_frequency_hz=0.25,
-            pulse_ramp_rate_hz_per_s=0.5,
-            pulse_length_s=1.0,
-            range_reference_function=reference_function,
-            discard_trailing_sample=True,
-        )
-        np.testing.assert_allclose(dad_result, result[:, :-1])
-        np.testing.assert_array_equal(dad_times, times[:12])
+        np.testing.assert_allclose(result[0], valid[:-1], rtol=2e-6, atol=2e-6)
+        np.testing.assert_array_equal(result_times, times[:12])
 
         supplied_output = np.empty_like(result)
         supplied_result, _ = azimuth_pre_processing.range.compression.compress(
@@ -710,7 +737,7 @@ class ProcessingTest(unittest.TestCase):
             pulse_length_s=1.0,
             range_time_shift_s=-0.125,
         )
-        np.testing.assert_array_equal(shifted_times, times[:13] - 0.125)
+        np.testing.assert_array_equal(shifted_times, times[:12] - 0.125)
         self.assertFalse(np.allclose(shifted, result))
 
         same_result, same_times = azimuth_pre_processing.range.compression.compress(

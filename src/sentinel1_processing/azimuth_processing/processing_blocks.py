@@ -212,18 +212,22 @@ def derive_output_geometry(
         rate = azimuth_compression.fm_rate_magnitude(
             ranges, velocity, fdc, wavelength_m
         )
-        return fdc, velocity, -fdc / rate
+        return fdc, velocity, rate, -fdc / rate
 
-    _, _, first_dc_time = state(0)
-    azimuth_start = int(np.floor(
+    _, _, _, first_dc_time = state(0)
+    # Eq. 8-15 selects the next PRI. The result is a one-based PRI ordinal,
+    # hence the subtraction when converting it to a zero-based array index.
+    azimuth_start = int(np.ceil(
         half_support + extra_overlap + np.max(first_dc_time) / pri
-    ))
+    )) - 1
 
     last_start = starts[-1]
-    last_center = last_start + (fft_length - 1) // 2
-    _, _, last_dc_time = state(last_center)
+    _, _, last_rate, last_dc_time = state(times.size - 1)
+    last_support = np.ceil(processing_bandwidth_hz / last_rate / pri)
+    # Rearranged Eq. 8-19: -min(-Tmf/2 + eta_c) is equivalent
+    # to max(Tmf/2 - eta_c), evaluated per range cell at scene end.
     trailing_throwaway = int(np.floor(
-        half_support - np.max(last_dc_time) / pri
+        np.max(0.5 * last_support - last_dc_time / pri)
     ))
     azimuth_stop = last_start + fft_length - trailing_throwaway
 
@@ -236,7 +240,7 @@ def derive_output_geometry(
     spacing = speed_of_light_mps / (2.0 * range_sample_frequency_hz)
     for start in starts:
         center = start + (fft_length - 1) // 2
-        fdc, velocity, _ = state(center)
+        fdc, velocity, _, _ = state(center)
         frequency = np.maximum(
             np.abs(baseband[0] + fdc),
             np.abs(baseband[-1] + fdc),
