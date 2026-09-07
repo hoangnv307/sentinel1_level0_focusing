@@ -106,6 +106,7 @@ stack-data==0.6.3
 starlette==1.6.0
 terminado==0.18.1
 tinycss2==1.5.1
+tifffile==2026.8.16
 tomlkit==0.15.1
 tornado==6.5.8
 traitlets==5.16.1

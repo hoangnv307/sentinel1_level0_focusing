@@ -13,6 +13,7 @@ dependencies = [
     "pandas",
     "scipy",
     "sentinel1decoder",
+    "tifffile",
 ]
 
 [tool.setuptools.packages.find]
