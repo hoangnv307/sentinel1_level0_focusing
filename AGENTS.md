@@ -16,7 +16,7 @@ All user-facing docs/commits are in Vietnamese.
 ## Commands
 
 - **Install**: `pip install -r requirements-lock.txt && pip install -e . --no-deps`
-- **Open notebook**: `marimo edit workflows/sentinel-1/focus_selected_chunk.py`
+- **Open notebook**: `marimo edit workflows/sentinel-1/focus_scene.py`
 - **Run tests** (unittest — pytest is *not* installed):
   ```bash
   MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python -m unittest discover -s test -p "test_*.py"
@@ -31,18 +31,21 @@ All user-facing docs/commits are in Vietnamese.
 - `workflows/sentinel-1/` — Sentinel-1 marimo workflows (cells as `@app.cell`).
 - `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
 - `src/sentinel1_processing/` — pure processing package:
+  - `pre_processing/downlink_header_validation/` — kiểm tra header downlink theo DAD §4.3.
   - `raw_data_correction.py` — I/Q bias estimation.
-  - `range_processing/` — `reference_function`, `swst_bias`, `dependent_gain`.
+  - `range_processing/` — `range_reference_function`, `swst_bias`, `dependent_gain`.
   - `azimuth_pre_processing/range/compression.py` — range compression
     (`compress`, `zero_pad`, `forward_fft`, `multiply_reference_function`,
     `inverse_fft`, `extract_valid_samples`).
   - `azimuth_pre_processing/` — zero padding and forward FFT.
   - `azimuth_processing/` — focus pipeline: RCMC, secondary range compression,
     azimuth compression, processing blocks.
-  - `doppler_centroid_estimation.py` (~2k lines) — Doppler centroid estimation.
-  - `effective_velocity.py` — effective velocity model.
-  - `dce_plotting.py` — DCE diagnostic plots.
-- `src/notebook_support/cache.py` — large-array storage and stale-cache cleanup helpers.
+  - `doppler_centroid/estimation.py` (~2k lines) — DCE từ dữ liệu.
+  - `doppler_centroid/geometry.py` — DCE hình học từ orbit/PVT và attitude.
+  - `core/effective_velocity.py` — effective velocity model nền tảng.
+  - `utils/dce_plotting.py` — DCE diagnostic plots.
+  - `utils/geotiff.py` — export SLC GeoTIFF với GCP.
+- `src/notebook_support/cache.py` — fingerprint, cache và memmap dành riêng cho notebook.
 - `test/` — unittest suite for Sentinel-1, RADARSAT-1, cache, and effective velocity.
 - `data/`, `output/` — raw input / produced output (gitignored, see `.gitignore`).
 - `.cache/sentinel1/` — marimo persistent cache (gitignored).

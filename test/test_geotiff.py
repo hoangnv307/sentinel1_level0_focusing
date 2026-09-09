@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import tifffile
 
-from sentinel1_processing.geotiff import export_slc_with_gcps
+from sentinel1_processing.utils.geotiff import export_slc_with_gcps
 
 
 ANNOTATION = """<product>

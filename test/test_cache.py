@@ -8,20 +8,41 @@ import numpy as np
 from notebook_support.cache import (
     array_cache_matches,
     cache_fingerprint,
-    chunk_cache_key,
+    file_identity,
     invalidate_broken_array_cache,
+    load_or_create_array,
     open_array,
     prune_old_entries,
     save_cache_fingerprint,
     save_array,
+    scene_cache_key,
+    source_snapshot,
+    write_memmap,
 )
 
 
 class CacheTest(unittest.TestCase):
-    def test_chunk_cache_key_is_order_independent(self):
-        self.assertEqual(chunk_cache_key((14, 13)), "chunks-13-14")
+    def test_scene_cache_key_is_order_independent(self):
+        self.assertEqual(scene_cache_key((14, 13)), "chunks-13-14")
         with self.assertRaises(ValueError):
-            chunk_cache_key((13, 13))
+            scene_cache_key(())
+
+    def test_notebook_file_helpers(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "array.npy"
+
+            def write(output):
+                output[:] = 4
+                return "written"
+
+            result = write_memmap(path, (2, 3), write)
+
+            self.assertEqual(result, "written")
+            np.testing.assert_array_equal(open_array(path), 4)
+            self.assertEqual(file_identity(path)[1], path.stat().st_size)
+            self.assertIn(
+                Path(__file__).read_bytes(), source_snapshot(__import__(__name__))
+            )
 
     def test_large_array_cache_is_memory_mapped(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -89,6 +110,25 @@ class CacheTest(unittest.TestCase):
                     stage, array, cache_fingerprint("input", 2), (2, 3)
                 )
             )
+
+    def test_load_or_create_array_reuses_valid_cache(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            stage = Path(temporary_directory) / "stage"
+            fingerprint = cache_fingerprint("input")
+
+            def build(path):
+                save_array(path, np.ones((2, 3), dtype=np.complex64))
+                return "built"
+
+            path, array, result = load_or_create_array(
+                stage, fingerprint, (2, 3), build
+            )
+            self.assertEqual(result, "built")
+            self.assertEqual(
+                load_or_create_array(stage, fingerprint, (2, 3), build)[2],
+                None,
+            )
+            np.testing.assert_array_equal(array, open_array(path))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import numpy as np
 from scipy.fft import fft
 
 
-def calculate(
+def create_freq_domain(
     *,
     sample_rate_hz,
     pulse_start_frequency_hz,
@@ -12,7 +12,7 @@ def calculate(
     pulse_length_s,
     fft_length,
 ):
-    """Calculate the frequency-domain range matched filter."""
+    """Create the frequency-domain Range Reference Function."""
     num_tx_samples = int(np.ceil(pulse_length_s * sample_rate_hz))
     if fft_length < num_tx_samples:
         raise ValueError("fft_length must cover the transmitted pulse.")
@@ -34,4 +34,4 @@ def calculate(
     matched_filter /= np.linalg.norm(matched_filter)
     return fft(matched_filter, n=fft_length).astype(np.complex64)
 
-__all__ = ["calculate"]
+__all__ = ["create_freq_domain"]

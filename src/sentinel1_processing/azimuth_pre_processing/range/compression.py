@@ -3,7 +3,7 @@
 import numpy as np
 from scipy.fft import fft, fftfreq, ifft
 
-from ...range_processing import reference_function
+from ... import range_processing
 
 
 def zero_pad(range_lines, fft_length, iq_bias=0.0j):
@@ -82,7 +82,7 @@ def compress(
     num_tx_samples = int(np.ceil(pulse_length_s * sample_rate_hz))
     fft_length = 1 << int(np.ceil(np.log2(n_range + num_tx_samples - 1)))
     reference = (
-        reference_function.calculate(
+        range_processing.range_reference_function.create_freq_domain(
             sample_rate_hz=sample_rate_hz,
             pulse_start_frequency_hz=pulse_start_frequency_hz,
             pulse_ramp_rate_hz_per_s=pulse_ramp_rate_hz_per_s,

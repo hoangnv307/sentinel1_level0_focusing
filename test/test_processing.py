@@ -13,10 +13,10 @@ from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
 import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
 import sentinel1_processing.azimuth_processing as azimuth_processing
-import sentinel1_processing.dce_plotting as dce_plotting
-import sentinel1_processing.doppler_centroid_estimation as doppler_centroid_estimation
-import sentinel1_processing.effective_velocity as effective_velocity
-import sentinel1_processing.geometry_doppler as geometry_doppler
+import sentinel1_processing.utils.dce_plotting as dce_plotting
+import sentinel1_processing.doppler_centroid as doppler_centroid
+import sentinel1_processing.core.effective_velocity as effective_velocity
+import sentinel1_processing.pre_processing.downlink_header_validation as downlink_header_validation
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.raw_data_correction as raw_data_correction
 import sentinel1_processing.s6_parameters as s6_parameters
@@ -25,7 +25,7 @@ import sentinel1_processing.s6_parameters as s6_parameters
 class ProcessingTest(unittest.TestCase):
     def test_pdu_stage3_sample_count_matches_s6_packets(self):
         # PDU Tables 5.1-1/5.1-2 for RGDEC 9 (L/M=5/16, offset=97).
-        count = range_processing.sample_count.rgdec9_stage3_rx_samples
+        count = downlink_header_validation.sample_count.rgdec9_stage3_rx_samples
         self.assertEqual(count(16016), 19950)
         self.assertEqual(count(16044), 19986)
 
@@ -263,19 +263,19 @@ class ProcessingTest(unittest.TestCase):
         self.assertLessEqual(anchor_time, geometry.first_zero_doppler_time_s)
 
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
-        first = doppler_centroid_estimation.Segment(
+        first = doppler_centroid.estimation.Segment(
             np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.complex64),
             np.arange(4.0),
             np.array([0.0, 1.0]),
             name="first",
         )
-        second = doppler_centroid_estimation.Segment(
+        second = doppler_centroid.estimation.Segment(
             np.array([[9, 10, 11, 12], [13, 14, 15, 16]], dtype=np.complex64),
             np.arange(1.0, 5.0),
             np.array([2.0, 3.0]),
             name="second",
         )
-        prepared = doppler_centroid_estimation.prepare_segments(
+        prepared = doppler_centroid.estimation.prepare_segments(
             [first, second], prf_hz=1.0
         )
         output = np.empty((4, 5), dtype=np.complex64)
@@ -288,30 +288,30 @@ class ProcessingTest(unittest.TestCase):
             [[1, 2, 3, 4, 0], [5, 6, 7, 8, 0], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16]],
         )
 
-        short = doppler_centroid_estimation.Segment(
+        short = doppler_centroid.estimation.Segment(
             np.array([[9, 10]], dtype=np.complex64),
             np.array([1.0, 2.0]),
             np.array([2.0]),
             name="short",
         )
-        dad_buffer = doppler_centroid_estimation.prepare_segments(
+        dad_buffer = doppler_centroid.estimation.prepare_segments(
             [first, short], prf_hz=1.0
         )
         self.assertEqual(dad_buffer.num_range_samples, 5)
 
-        fractional = doppler_centroid_estimation.Segment(
+        fractional = doppler_centroid.estimation.Segment(
             np.ones((1, 2), dtype=np.complex64),
             np.array([0.25, 1.25]),
             np.array([4.0]),
             name="fractional",
         )
         with self.assertRaisesRegex(ValueError, "range_time_shift_s"):
-            doppler_centroid_estimation.prepare_segments(
+            doppler_centroid.estimation.prepare_segments(
                 [first, fractional], prf_hz=1.0
             )
 
     def test_dce_fit_ignores_zero_quality_points(self):
-        coefficients, valid, _ = doppler_centroid_estimation.fit_polynomial(
+        coefficients, valid, _ = doppler_centroid.estimation.fit_polynomial(
             np.arange(5.0),
             np.array([0.0, 1.0, 100.0, 3.0, 4.0]),
             t0_s=0.0,
@@ -341,7 +341,7 @@ class ProcessingTest(unittest.TestCase):
             frequencies = np.array([
                 float(point.findtext("frequency")) for point in points
             ])
-            coefficients, valid, rms = doppler_centroid_estimation.fit_polynomial(
+            coefficients, valid, rms = doppler_centroid.estimation.fit_polynomial(
                 times,
                 frequencies,
                 t0_s=float(record.findtext("t0")),
@@ -363,7 +363,7 @@ class ProcessingTest(unittest.TestCase):
                 )
 
     def test_s6_range_blocks_match_annotation_layout(self):
-        config = doppler_centroid_estimation.Config.for_stripmap_s6()
+        config = doppler_centroid.estimation.Config.for_stripmap_s6()
         sample_rate_hz = 46_918_402.8
         root = ElementTree.parse(
             Path(__file__).parents[1]
@@ -380,7 +380,7 @@ class ProcessingTest(unittest.TestCase):
         common_range_times_s = (
             common_range_start_s + np.arange(17634) / sample_rate_hz
         )
-        blocks = doppler_centroid_estimation.build_range_blocks(
+        blocks = doppler_centroid.estimation.build_range_blocks(
             common_range_times_s.size,
             common_range_times_s,
             config,
@@ -471,7 +471,7 @@ class ProcessingTest(unittest.TestCase):
             cached = np.load(cache_paths[chunk], mmap_mode="r")
             if cached.shape[1] < expected_samples:
                 self.fail(f"Cache range-compression chunk {chunk} bị thiếu mẫu.")
-            segments.append(doppler_centroid_estimation.Segment(
+            segments.append(doppler_centroid.estimation.Segment(
                 cached[:, :expected_samples],
                 range_times[:expected_samples] + fractional_shift_s,
                 azimuth_times,
@@ -479,13 +479,13 @@ class ProcessingTest(unittest.TestCase):
             ))
 
         config = replace(
-            doppler_centroid_estimation.Config.for_stripmap_s6(),
+            doppler_centroid.estimation.Config.for_stripmap_s6(),
             accc_range_weighting="phase",
         )
-        estimator = doppler_centroid_estimation.Estimator(
+        estimator = doppler_centroid.estimation.Estimator(
             1.0 / float(selected["PRI"].iloc[0]), config
         )
-        geometry_estimator = geometry_doppler.Estimator.from_level0_product(
+        geometry_estimator = doppler_centroid.geometry.Estimator.from_level0_product(
             l0file, s6_parameters.RADAR_WAVELENGTH_M
         )
         first_time_s = segments[0].azimuth_times_s[0]
@@ -496,7 +496,7 @@ class ProcessingTest(unittest.TestCase):
             segments,
             dce_range_start_s=native_axes[13][0][0],
             geometry_dc_provider=lambda time_s, range_times_s: (
-                geometry_estimator.evaluate(
+                geometry_estimator.estimate(
                     time_s,
                     range_times_s
                     * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
@@ -535,7 +535,7 @@ class ProcessingTest(unittest.TestCase):
                     f"DCE{record_index} Fine-DC RMSE = {rmse_hz:.3f} Hz",
                 )
 
-        prepared = doppler_centroid_estimation.prepare_segments(
+        prepared = doppler_centroid.estimation.prepare_segments(
             segments, prf_hz=estimator.prf_hz
         )
         doppler_for_line = lambda line: estimator.evaluate_at_line(
@@ -568,7 +568,7 @@ class ProcessingTest(unittest.TestCase):
             slant_ranges_m,
             prepared.azimuth_times_s,
             doppler_for_line,
-            lambda line: geometry_estimator.evaluate(
+            lambda line: geometry_estimator.estimate(
                 prepared.azimuth_times_s[line], slant_ranges_m
             ),
             velocity,
@@ -617,7 +617,7 @@ class ProcessingTest(unittest.TestCase):
             float(point.findtext("slantRangeTime"))
             for point in first_dc.findall("./fineDceList/fineDce")[::9]
         ])
-        actual_geometry_dc = geometry_estimator.evaluate(
+        actual_geometry_dc = geometry_estimator.estimate(
             Time(first_dc.findtext("azimuthTime"), format="isot", scale="utc").gps,
             geometry_times_s * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS / 2.0,
             n_control_points=3,
@@ -635,21 +635,21 @@ class ProcessingTest(unittest.TestCase):
         prf_hz = 100.0
         eta = np.arange(4) / prf_hz
         phase = np.exp(2j * np.pi * 10.0 * eta)
-        first = doppler_centroid_estimation.Segment(
+        first = doppler_centroid.estimation.Segment(
             phase[:2, None] * np.ones((2, 6)),
             2.0 + np.arange(6),
             eta[:2],
             name="first",
         )
-        second = doppler_centroid_estimation.Segment(
+        second = doppler_centroid.estimation.Segment(
             phase[2:, None] * np.ones((2, 8)),
             np.arange(8.0),
             eta[2:],
             name="second",
         )
-        estimator = doppler_centroid_estimation.Estimator(
+        estimator = doppler_centroid.estimation.Estimator(
             prf_hz,
-            doppler_centroid_estimation.Config(
+            doppler_centroid.estimation.Config(
                 azimuth_block_size_lines=4,
                 num_range_blocks=1,
                 range_block_size_samples=4,
@@ -717,15 +717,15 @@ class ProcessingTest(unittest.TestCase):
 
     def test_public_api_follows_dad_processing_steps(self):
         self.assertEqual(
-            doppler_centroid_estimation.Config.for_stripmap_s6().unwrap_weighting,
+            doppler_centroid.estimation.Config.for_stripmap_s6().unwrap_weighting,
             "coherence",
         )
         self.assertEqual(
-            doppler_centroid_estimation.Config.for_stripmap_s6().fit_weighting,
+            doppler_centroid.estimation.Config.for_stripmap_s6().fit_weighting,
             "uniform",
         )
         self.assertEqual(
-            doppler_centroid_estimation.Config.for_stripmap_s6().accc_range_weighting,
+            doppler_centroid.estimation.Config.for_stripmap_s6().accc_range_weighting,
             "phase",
         )
         self.assertEqual(
@@ -734,7 +734,7 @@ class ProcessingTest(unittest.TestCase):
         )
         self.assertEqual(
             range_processing.__all__,
-            ["reference_function", "dependent_gain", "sample_count", "swst_bias"],
+            ["range_reference_function", "dependent_gain", "swst_bias"],
         )
         self.assertEqual(
             azimuth_processing.__all__,
@@ -746,13 +746,16 @@ class ProcessingTest(unittest.TestCase):
             ],
         )
         self.assertTrue(callable(azimuth_pre_processing.range.compression.compress))
-        self.assertEqual(doppler_centroid_estimation.Segment.__name__, "Segment")
-        self.assertEqual(doppler_centroid_estimation.Estimator.__name__, "Estimator")
+        self.assertEqual(doppler_centroid.estimation.Segment.__name__, "Segment")
+        self.assertEqual(
+            doppler_centroid.estimation.Estimator.__name__,
+            "Estimator",
+        )
 
     def test_range_compression_matches_linear_convolution(self):
         data = np.arange(16, dtype=np.float32)[None, :].astype(np.complex64)
         times = np.arange(data.shape[1], dtype=np.float64)
-        reference_function = range_processing.reference_function.calculate(
+        reference_function = range_processing.range_reference_function.create_freq_domain(
             sample_rate_hz=4.0,
             pulse_start_frequency_hz=0.25,
             pulse_ramp_rate_hz_per_s=0.5,
@@ -849,12 +852,12 @@ class ProcessingTest(unittest.TestCase):
         )
         np.testing.assert_allclose(corrected, result, rtol=2e-6, atol=2e-6)
 
-        phase_weighted, _, _ = doppler_centroid_estimation.estimate_fine_dc(
+        phase_weighted, _, _ = doppler_centroid.estimation.estimate_fine_dc(
             np.array([
                 [1.0, 100.0],
                 [1.0, 100.0j],
             ]),
-            [doppler_centroid_estimation.RangeBlock(0, 2, 1.0, 0.0)],
+            [doppler_centroid.estimation.RangeBlock(0, 2, 1.0, 0.0)],
             1000.0,
             range_weighting="phase",
         )
@@ -883,7 +886,7 @@ class ProcessingTest(unittest.TestCase):
         times = np.arange(n_range, dtype=np.float64) / fs
         data = np.zeros((1, n_range), dtype=np.complex64)
         data[0, 300:300 + num_tx] = replica
-        reference = range_processing.reference_function.calculate(
+        reference = range_processing.range_reference_function.create_freq_domain(
             sample_rate_hz=fs,
             pulse_start_frequency_hz=8.0,
             pulse_ramp_rate_hz_per_s=48.0,
@@ -921,7 +924,7 @@ class ProcessingTest(unittest.TestCase):
 
     def test_absolute_dce_uses_first_geometry_range_block(self):
         absolute, coefficients, _, ambiguity, _, _ = (
-            doppler_centroid_estimation.resolve_absolute_dc(
+            doppler_centroid.estimation.resolve_absolute_dc(
                 [0.0, 1.0, 2.0],
                 [200.0, 210.0, 220.0],
                 [1200.0, 100.0, 110.0],
@@ -939,9 +942,9 @@ class ProcessingTest(unittest.TestCase):
         )
 
     def test_dce_accepts_independently_known_ambiguity(self):
-        estimator = doppler_centroid_estimation.Estimator(
+        estimator = doppler_centroid.estimation.Estimator(
             1000.0,
-            doppler_centroid_estimation.Config(
+            doppler_centroid.estimation.Config(
                 azimuth_block_size_lines=2,
                 num_range_blocks=3,
                 polynomial_degree=1,
@@ -949,15 +952,15 @@ class ProcessingTest(unittest.TestCase):
                 fit_weighting="uniform",
             ),
         )
-        block = doppler_centroid_estimation.AzimuthBlock(
+        block = doppler_centroid.estimation.AzimuthBlock(
             0, 2, 1.0, 0.0, 2.0, 1.0
         )
         range_blocks = [
-            doppler_centroid_estimation.RangeBlock(i, i + 1, i + 0.5, float(i))
+            doppler_centroid.estimation.RangeBlock(i, i + 1, i + 0.5, float(i))
             for i in range(3)
         ]
         with patch.object(
-            doppler_centroid_estimation,
+            doppler_centroid.estimation,
             "estimate_fine_dc",
             return_value=(
                 np.array([10.0, 20.0, 30.0]),
@@ -1022,7 +1025,7 @@ class ProcessingTest(unittest.TestCase):
         )
 
     def test_dce_interpolation_and_sinc_normalization(self):
-        records = doppler_centroid_estimation.parse_annotation_records([
+        records = doppler_centroid.estimation.parse_annotation_records([
             {"azimuthTime": "2025-01-01T00:00:00", "t0": 0.0,
              "dataDcPolynomial": [1.0, 2.0]},
             {"azimuthTime": "2025-01-01T00:00:02", "t0": 0.0,
@@ -1030,7 +1033,7 @@ class ProcessingTest(unittest.TestCase):
         ])
         middle = (records[0]["azimuth_s"] + records[1]["azimuth_s"]) / 2.0
         np.testing.assert_allclose(
-            doppler_centroid_estimation.evaluate_annotation_records(
+            doppler_centroid.estimation.evaluate_annotation_records(
                 records, middle, [0.0, 1.0]
             ),
             [2.0, 5.0],
@@ -1041,8 +1044,8 @@ class ProcessingTest(unittest.TestCase):
         )
         np.testing.assert_allclose(table.sum(axis=1), 1.0)
 
-        estimate = doppler_centroid_estimation.Estimate(
-            block=doppler_centroid_estimation.AzimuthBlock(
+        estimate = doppler_centroid.estimation.Estimate(
+            block=doppler_centroid.estimation.AzimuthBlock(
                 0, 2, 1.0, middle, middle, middle
             ),
             t0_s=0.0,
@@ -1055,7 +1058,7 @@ class ProcessingTest(unittest.TestCase):
             coherence=np.array([0.75]),
             rms_error_hz=0.5,
         )
-        comparison = doppler_centroid_estimation.compare_with_annotations(
+        comparison = doppler_centroid.estimation.compare_with_annotations(
             [records[0]], [estimate], [0.0, 1.0], prf_hz=1000.0
         )[0]
         self.assertAlmostEqual(comparison["rmse_hz"], np.sqrt(2.5))

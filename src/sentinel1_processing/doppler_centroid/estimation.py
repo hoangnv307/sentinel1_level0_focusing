@@ -11,7 +11,7 @@ from typing import Callable, Iterable, Literal, Optional, Sequence
 
 import numpy as np
 
-from . import s6_parameters
+from .. import s6_parameters
 
 
 ArrayLike = np.ndarray | Sequence[float]
@@ -2169,4 +2169,4 @@ __all__ = [
 
 if __name__ == "__main__":
     _self_test()
-    print("sentinel1_processing.doppler_centroid_estimation self-test: PASS")
+    print("sentinel1_processing.doppler_centroid.estimation self-test: PASS")

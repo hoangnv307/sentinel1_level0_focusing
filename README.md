@@ -15,8 +15,7 @@ pip install -e . --no-deps
 Notebook dùng **marimo** và được lưu dưới dạng file Python:
 
 ```bash
-marimo edit workflows/sentinel-1/focus_selected_chunk.py
-marimo edit workflows/sentinel-1/focus_chunks_13_14.py
+marimo edit workflows/sentinel-1/focus_scene.py
 ```
 
 Marimo tự chạy cell theo quan hệ phụ thuộc và lưu các kết quả tốn thời gian
@@ -25,9 +24,9 @@ công.
 
 Các kết quả được lưu gồm:
 
-- Decode dữ liệu I/Q của chunk 13 và 14.
-- I/Q bias của từng chunk.
-- Range-compressed data của từng chunk.
+- Decode dữ liệu I/Q của các segment trong scene.
+- I/Q bias của từng segment.
+- Range-compressed data của từng segment.
 - Doppler centroid estimation.
 - Focused SLC.
 
@@ -37,7 +36,7 @@ Các kết quả được lưu gồm:
 |---|---|
 | Mở lại notebook, không đổi gì | Các bước nặng được đọc từ ổ đĩa; bảng và biểu đồ vẫn có thể được dựng lại. |
 | Sửa cell DCE | DCE được tính và lưu lại. Focus chỉ tính lại nếu dữ liệu DCE thay đổi. Decode và Range Compression dùng dữ liệu đã lưu. |
-| Sửa source DCE trong `src/sentinel1_processing/doppler_centroid_estimation.py` | Tương tự sửa cell DCE. Marimo tự reload module và chạy lại phần phụ thuộc. |
+| Sửa source DCE trong `src/sentinel1_processing/doppler_centroid/` | Tương tự sửa cell DCE. Marimo tự reload module và chạy lại phần phụ thuộc. |
 | Sửa Range Compression | Range Compression được tính lại. DCE và Focus chỉ tính lại nếu dữ liệu đầu vào của chúng thay đổi. Decode vẫn dùng dữ liệu đã lưu. |
 | Sửa Focus | Chỉ Focus chạy lại. |
 | Đổi tham số hoặc file đầu vào | Cell dùng giá trị đó và các cell phía sau chạy lại; các cell phía trước không liên quan được giữ nguyên. |

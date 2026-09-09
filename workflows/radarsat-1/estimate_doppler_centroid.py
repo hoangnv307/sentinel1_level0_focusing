@@ -12,7 +12,7 @@ from radarsat1_processing import (
     read_l1_reference,
     read_metadata,
 )
-from sentinel1_processing.dce_plotting import plot_comparisons
+from sentinel1_processing.utils.dce_plotting import plot_comparisons
 
 
 def _one(pattern: str) -> Path:

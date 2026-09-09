@@ -7,11 +7,11 @@ from astropy.time import Time
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
 
-from .effective_velocity import Estimator as OrbitEstimator
+from ..core.effective_velocity import Estimator as OrbitEstimator
 
 
 class Estimator:
-    """Evaluate the absolute geometry DC on a slant-range grid."""
+    """Estimate absolute Doppler centroid from orbit and attitude geometry."""
 
     def __init__(self, ephemeris, wavelength_m):
         self.orbit = OrbitEstimator.from_ephemeris(ephemeris, wavelength_m)
@@ -90,7 +90,7 @@ class Estimator:
         # Eq. 5-1 uses target-to-satellite r0; ``view`` is the reverse vector.
         return 2.0 * np.dot(velocity, view) / (self.wavelength_m * radius)
 
-    def evaluate(self, time_s, slant_ranges_m, *, n_control_points=9):
+    def estimate(self, time_s, slant_ranges_m, *, n_control_points=9):
         """Return geometry DC [Hz], quadratically interpolated over range."""
         ranges = np.asarray(slant_ranges_m, dtype=np.float64)
         if ranges.ndim != 1 or ranges.size < 2 or np.any(ranges <= 0.0):

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import sentinel1_processing.effective_velocity as effective_velocity
+import sentinel1_processing.core.effective_velocity as effective_velocity
 
 
 class EphemerisTest(unittest.TestCase):

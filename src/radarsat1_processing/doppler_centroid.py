@@ -9,7 +9,7 @@ import struct
 import numpy as np
 
 from sentinel1_processing.azimuth_pre_processing.range.compression import compress
-from sentinel1_processing.doppler_centroid_estimation import Config, Estimator
+import sentinel1_processing.doppler_centroid as doppler_centroid
 
 from .ceos import SPEED_OF_LIGHT_MPS, decode, read_metadata
 
@@ -211,7 +211,7 @@ def estimate(raw_path: str | Path, *, azimuth_lines: int = 6000, num_range_block
         compressed.shape[1],
         int(np.floor((physical_far_time - range_times[0]) * metadata.sample_rate_hz)) + 1,
     )
-    config = Config(
+    config = doppler_centroid.estimation.Config(
         azimuth_block_size_lines=azimuth_lines,
         num_range_blocks=num_range_blocks,
         azimuth_placement="spacing",
@@ -225,7 +225,7 @@ def estimate(raw_path: str | Path, *, azimuth_lines: int = 6000, num_range_block
         accc_range_weighting="power",
         range_roi_stop=range_roi_stop,
     )
-    estimator = Estimator(metadata.prf_hz, config)
+    estimator = doppler_centroid.estimation.Estimator(metadata.prf_hz, config)
     azimuth_blocks, range_blocks = estimator.build_layout(
         n_azimuth_lines=azimuth_lines,
         n_range_samples=compressed.shape[1],
@@ -241,7 +241,7 @@ def estimate(raw_path: str | Path, *, azimuth_lines: int = 6000, num_range_block
 
 
 def compare(estimated, l1_reference: L1DopplerReference) -> dict:
-    """Tạo record tương thích với ``dce_plotting.plot_comparisons``."""
+    """Tạo record tương thích với ``utils.dce_plotting.plot_comparisons``."""
 
     range_times = np.linspace(estimated.range_times_s[0], estimated.range_times_s[-1], 512)
     slant_range_m = range_times * SPEED_OF_LIGHT_MPS / 2
