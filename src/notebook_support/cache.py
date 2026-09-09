@@ -1,6 +1,7 @@
 """Hỗ trợ lưu mảng lớn và dọn cache cho notebook marimo."""
 
 from hashlib import sha256
+from functools import partial
 import pickle
 from pathlib import Path
 
@@ -67,6 +68,17 @@ def load_or_create_array(cache_directory, fingerprint, shape, writer):
         result = writer(path)
         save_cache_fingerprint(directory, fingerprint)
     return path, open_array(path), result
+
+
+def persistent(save_path):
+    """Return the project's configured marimo persistent-cache decorator."""
+    import marimo
+
+    return partial(
+        marimo.persistent_cache,
+        save_path=str(save_path),
+        pin_modules=True,
+    )
 
 
 def save_array(path: str | Path, array: np.ndarray) -> None:

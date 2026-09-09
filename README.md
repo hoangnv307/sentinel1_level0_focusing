@@ -98,9 +98,10 @@ doppler_centroid_estimates = estimator.estimate_segments(...)
 print(doppler_centroid_estimates)
 ```
 
-Nếu đặt `print()` hoặc vẽ biểu đồ bên trong block `mo.persistent_cache`, phần
-hiển thị sẽ bị bỏ qua khi cache được dùng. Vì vậy các block cache chỉ chứa
-tính toán tạo dữ liệu.
+Nếu đặt `print()` hoặc vẽ biểu đồ bên trong hàm có `@cache.persistent(...)`,
+phần hiển thị sẽ bị bỏ qua khi cache được dùng. Vì vậy các hàm này chỉ chứa
+tính toán tạo dữ liệu; cấu hình kỹ thuật của marimo cache nằm trong
+`src/notebook_support/cache.py`.
 
 Cache dùng pickle; chỉ mở cache do chính dự án tạo ra. Muốn tính lại toàn bộ,
 xóa thư mục `.cache/sentinel1/` rồi mở lại notebook.

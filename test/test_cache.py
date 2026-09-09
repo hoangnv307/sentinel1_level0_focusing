@@ -12,6 +12,7 @@ from notebook_support.cache import (
     invalidate_broken_array_cache,
     load_or_create_array,
     open_array,
+    persistent,
     prune_old_entries,
     save_cache_fingerprint,
     save_array,
@@ -129,6 +130,10 @@ class CacheTest(unittest.TestCase):
                 None,
             )
             np.testing.assert_array_equal(array, open_array(path))
+
+    def test_persistent_returns_decorator(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            self.assertTrue(callable(persistent(temporary_directory)))
 
 
 if __name__ == "__main__":
