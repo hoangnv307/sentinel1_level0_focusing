@@ -7,7 +7,7 @@ from astropy.time import Time
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
 
-from ..core.effective_velocity import Estimator as OrbitEstimator
+from ..common.effective_velocity import Estimator as OrbitEstimator
 
 
 class Estimator:

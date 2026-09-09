@@ -66,11 +66,10 @@ def _():
 def _(source_snapshot):
     import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
     import sentinel1_processing.azimuth_processing as azimuth_processing
+    import sentinel1_processing.common as common
     import sentinel1_processing.doppler_centroid as doppler_centroid
-    import sentinel1_processing.core.effective_velocity as effective_velocity
     import sentinel1_processing.pre_processing.downlink_header_validation as downlink_header_validation
     import sentinel1_processing.range_processing as range_processing
-    import sentinel1_processing.raw_data_correction as raw_data_correction
     import sentinel1_processing.s6_parameters as s6_parameters
 
     range_source = source_snapshot(
@@ -79,23 +78,22 @@ def _(source_snapshot):
         range_processing,
         s6_parameters,
     )
-    raw_correction_source = source_snapshot(raw_data_correction)
+    raw_correction_source = source_snapshot(common.raw_data_correction)
     doppler_source = source_snapshot(doppler_centroid, s6_parameters)
     focus_source = source_snapshot(
-        azimuth_processing, effective_velocity, s6_parameters
+        azimuth_processing, common.effective_velocity, s6_parameters
     )
     return (
         azimuth_pre_processing,
         azimuth_processing,
+        common,
         doppler_centroid,
         doppler_source,
         downlink_header_validation,
-        effective_velocity,
         focus_source,
         range_processing,
         range_source,
         raw_correction_source,
-        raw_data_correction,
         s6_parameters,
     )
 
@@ -249,18 +247,18 @@ def _(
     TXPRR,
     TXPSF,
     azimuth_pre_processing,
+    common,
     l0file,
     np,
     range_reference_function,
     range_sample_freq,
-    raw_data_correction,
     transmitted_pulse_samples,
     write_memmap,
 ):
     def compress_chunk(chunk, raw_tau, range_time_shift_s, destination):
         _radar_data = l0file.get_acquisition_chunk_data(chunk)
         _iq_bias = np.complex128(
-            raw_data_correction.estimate_iq_bias(_radar_data)
+            common.raw_data_correction.estimate_iq_bias(_radar_data)
         )
         _shape = (
             _radar_data.shape[0],
@@ -487,10 +485,10 @@ def _(
 @app.cell
 def _(
     combined_eta,
+    common,
     common_tau,
     doppler_estimates,
     doppler_estimator,
-    effective_velocity,
     l0file,
     wavelength_m,
 ):
@@ -502,7 +500,7 @@ def _(
             slant_range_times_s=common_tau,
         )
 
-    velocity_estimator = effective_velocity.Estimator.from_level0_product(
+    velocity_estimator = common.effective_velocity.Estimator.from_level0_product(
         l0file, wavelength_m
     )
     # Scene kết thúc 0,90 s sau state-vector epoch cuối cùng trong sản phẩm.

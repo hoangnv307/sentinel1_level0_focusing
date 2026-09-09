@@ -32,7 +32,7 @@ All user-facing docs/commits are in Vietnamese.
 - `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
 - `src/sentinel1_processing/` — pure processing package:
   - `pre_processing/downlink_header_validation/` — kiểm tra header downlink theo DAD §4.3.
-  - `raw_data_correction.py` — I/Q bias estimation.
+  - `common/raw_data_correction.py` — I/Q bias correction theo DAD §9.2.
   - `range_processing/` — `range_reference_function`, `swst_bias`, `dependent_gain`.
   - `azimuth_pre_processing/range/compression.py` — range compression
     (`compress`, `zero_pad`, `forward_fft`, `multiply_reference_function`,
@@ -42,7 +42,7 @@ All user-facing docs/commits are in Vietnamese.
     azimuth compression, processing blocks.
   - `doppler_centroid/estimation.py` (~2k lines) — DCE từ dữ liệu.
   - `doppler_centroid/geometry.py` — DCE hình học từ orbit/PVT và attitude.
-  - `core/effective_velocity.py` — effective velocity model nền tảng.
+  - `common/effective_velocity.py` — effective velocity theo DAD §9.10.
   - `utils/dce_plotting.py` — DCE diagnostic plots.
   - `utils/geotiff.py` — export SLC GeoTIFF với GCP.
 - `src/notebook_support/cache.py` — fingerprint, cache và memmap dành riêng cho notebook.

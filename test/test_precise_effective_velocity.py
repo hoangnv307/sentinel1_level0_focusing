@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import sentinel1_processing.core.effective_velocity as effective_velocity
+import sentinel1_processing.common as common
 
 
 class EphemerisTest(unittest.TestCase):
@@ -18,7 +18,7 @@ class EphemerisTest(unittest.TestCase):
             "Z-axis velocity ECEF": [0, 0, 0, 0],
         })
 
-        estimator = effective_velocity.Estimator.from_ephemeris(
+        estimator = common.effective_velocity.Estimator.from_ephemeris(
             ephemeris, 0.05
         )
 

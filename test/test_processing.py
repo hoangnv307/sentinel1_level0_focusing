@@ -13,12 +13,11 @@ from scipy.fft import fftfreq, fftshift, ifft, ifftshift
 
 import sentinel1_processing.azimuth_pre_processing as azimuth_pre_processing
 import sentinel1_processing.azimuth_processing as azimuth_processing
+import sentinel1_processing.common as common
 import sentinel1_processing.utils.dce_plotting as dce_plotting
 import sentinel1_processing.doppler_centroid as doppler_centroid
-import sentinel1_processing.core.effective_velocity as effective_velocity
 import sentinel1_processing.pre_processing.downlink_header_validation as downlink_header_validation
 import sentinel1_processing.range_processing as range_processing
-import sentinel1_processing.raw_data_correction as raw_data_correction
 import sentinel1_processing.s6_parameters as s6_parameters
 
 
@@ -544,7 +543,7 @@ class ProcessingTest(unittest.TestCase):
             azimuth_times_s=prepared.azimuth_times_s,
             slant_range_times_s=prepared.common_slant_range_times_s,
         )
-        velocity = effective_velocity.Estimator.from_level0_product(
+        velocity = common.effective_velocity.Estimator.from_level0_product(
             l0file, s6_parameters.RADAR_WAVELENGTH_M
         )
         slant_ranges_m = (
@@ -837,7 +836,9 @@ class ProcessingTest(unittest.TestCase):
 
         biased = data + (2.0 - 3.0j)
         self.assertAlmostEqual(
-            raw_data_correction.estimate_iq_bias(np.full((2, 3), 2.0 - 3.0j)),
+            common.raw_data_correction.estimate_iq_bias(
+                np.full((2, 3), 2.0 - 3.0j)
+            ),
             2.0 - 3.0j,
         )
         corrected, _ = azimuth_pre_processing.range.compression.compress(
