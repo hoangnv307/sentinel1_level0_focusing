@@ -131,9 +131,11 @@ class CacheTest(unittest.TestCase):
             )
             np.testing.assert_array_equal(array, open_array(path))
 
-    def test_persistent_returns_decorator(self):
+    def test_persistent_returns_context_manager(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            self.assertTrue(callable(persistent(temporary_directory)))
+            context = persistent("test", temporary_directory)
+            self.assertTrue(hasattr(context, "__enter__"))
+            self.assertTrue(hasattr(context, "__exit__"))
 
 
 if __name__ == "__main__":

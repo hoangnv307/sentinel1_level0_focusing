@@ -98,8 +98,8 @@ doppler_centroid_estimates = estimator.estimate_segments(...)
 print(doppler_centroid_estimates)
 ```
 
-Nếu đặt `print()` hoặc vẽ biểu đồ bên trong hàm có `@cache.persistent(...)`,
-phần hiển thị sẽ bị bỏ qua khi cache được dùng. Vì vậy các hàm này chỉ chứa
+Nếu đặt `print()` hoặc vẽ biểu đồ bên trong block `cache.persistent(...)`,
+phần hiển thị sẽ bị bỏ qua khi cache được dùng. Vì vậy các block này chỉ chứa
 tính toán tạo dữ liệu; cấu hình kỹ thuật của marimo cache nằm trong
 `src/notebook_support/cache.py`.
 

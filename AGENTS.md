@@ -9,8 +9,8 @@ The repo contains **marimo notebooks** rendered as Python files under
 `workflows/sentinel-1/`, backed by pure-processing modules
 under `src/sentinel1_processing/`. The notebook decodes raw Level-0 I/Q data,
 corrects I/Q bias, range-compresses, estimates Doppler centroid, and focuses an
-SLC image. Expensive stages use the `@cache.persistent(...)` notebook-support
-decorator, which hides the marimo cache configuration from the workflow.
+SLC image. Expensive stages use the `cache.persistent(...)` notebook-support
+context, which hides the marimo cache configuration from the workflow.
 
 All user-facing docs/commits are in Vietnamese.
 
@@ -56,13 +56,13 @@ All user-facing docs/commits are in Vietnamese.
 - Cells are `@app.cell`; each cell declares its global deps via its `def _(...)` params.
 - **Separate computation from display**: heavy compute goes in its own cell, then a
   separate display cell (`print`, `md`, `plt`) reads its result. Do NOT put
-  `print()`/plots inside a function decorated with `@cache.persistent(...)` —
+  `print()`/plots inside a `cache.persistent(...)` block —
   they're skipped on cache hits.
-- Persistent functions wrap only data-producing computation:
+- Persistent blocks wrap only data-producing computation:
   ```python
-  @cache.persistent(scene_cache_directory)
-  def build_result(cache_inputs):
-      ...
+  with cache.persistent(stage_name, scene_cache_directory):
+      cache_inputs
+      result = build_result()
   ```
 - Keep numeric/array constants (sample rates, pulse params) as named vars in early cells.
 
@@ -75,14 +75,14 @@ All user-facing docs/commits are in Vietnamese.
   Example: `iq_bias=np.complex128(*iq_bias_components)` instead of `complex(*...)`.
   (Add `np` to the cell's `def _(...)` params if not already a dep.)
 - **A Python `complex` can also leak into notebook scope and poison a downstream cache's hash.** If a
-  cached function (or a dependent display cell) returns/exposes a bare `complex` (e.g. from
+  cache block (or a dependent display cell) returns/exposes a bare `complex` (e.g. from
   `estimate_iq_bias()`), any later `persistent_cache` block that transitively depends on it will
   fail at `__enter__` with the same `cannot convert 'complex' object to bytes`. Wrap the scalar as
   `np.complex128(value)` before it leaves the block, so it's hashed as a data primitive.
 - The notebook auto-clears stale cache entries for a stage after the later Focus stage completes;
   to recompute everything, delete `.cache/sentinel1/` and restart the notebook.
-- Return every result needed outside a function decorated with
-  `@cache.persistent(...)`; its body is skipped on cache hits.
+- Don't delete names bound inside a cache block; marimo restores those names on
+  cache hits.
 
 ## Testing expectations
 

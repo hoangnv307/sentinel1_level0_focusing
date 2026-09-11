@@ -16,9 +16,19 @@ def _(mo):
     mo.md(r"""
     # Focus a complete Sentinel-1 Level-0 scene
 
-    Processing flow: validate downlink headers, correct raw I/Q data, perform
-    range compression, align the range grid, estimate Doppler centroid, and
-    focus the complete scene into an SLC image.
+    Luồng xử lý bám theo DAD Figure 5-1 và Figure 6-1 cho Stripmap/S6:
+
+    1. đọc Level-0 và kiểm tra header (§4.3, §9.1);
+    2. tạo RRF, sửa I/Q bias, range compression và black-fill (§6.1, §9.2.1,
+       §6.2.2);
+    3. ước lượng Doppler centroid từ dữ liệu đã range-compress (§5);
+    4. xác định block focus Stripmap (§5.6, §9.10–§9.13);
+    5. azimuth zero-padding/FFT, SRC, RCMC và azimuth compression
+       (§6.2.1, §6.2.3, §6.3);
+    6. lấy support SLC hợp lệ (§8.3.1).
+
+    Demo không thực hiện các bước chỉ dành cho TOPSAR, Level-1
+    post-processing/SAFE, drift, RFI, EAP hay range-spreading-loss correction.
     """)
     return
 
@@ -39,14 +49,7 @@ def _():
     import notebook_support.cache as cache
 
     plt.style.use("default")
-    return (
-        PROJECT_ROOT,
-        cache,
-        colors,
-        np,
-        plt,
-        sentinel1decoder,
-    )
+    return PROJECT_ROOT, cache, colors, np, plt, sentinel1decoder
 
 
 @app.cell(hide_code=True)
@@ -88,7 +91,10 @@ def _(cache):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 1 - Input data and radar parameters
+    ## 1 — Level-0 input và pre-processing metadata
+
+    DAD §4.3, §9.1: mở Level-0, chọn các echo-data segment liên tiếp, kiểm tra
+    downlink header và dựng trục thời gian range/azimuth từ metadata packet.
     """)
     return
 
@@ -96,15 +102,14 @@ def _(mo):
 @app.cell
 def _(PROJECT_ROOT, cache, mo, sentinel1decoder):
     CACHE_ROOT = str(PROJECT_ROOT / ".cache" / "sentinel1")
-    _input_path = (
+    INPUT_PATH = (
         PROJECT_ROOT
         / "data"
         / "sao_paulo"
         / "s1a-s6-raw-s-vv-20251226t214356-20251226t214427-062491-07d496.dat"
     )
-    _watched_input = mo.watch.file(str(_input_path))
-    input_identity = cache.file_identity(_watched_input)
-    l0file = sentinel1decoder.Level0File(str(_input_path))
+    input_identity = cache.file_identity(mo.watch.file(str(INPUT_PATH)))
+    l0file = sentinel1decoder.Level0File(str(INPUT_PATH))
     return CACHE_ROOT, input_identity, l0file
 
 
@@ -135,9 +140,9 @@ def _(cache, l0file, s6_parameters, sentinel1decoder):
     az_sample_freq = 1.0 / PRI
     suppressed_data_time = 320.0 / (8.0 * sentinel1decoder.constants.F_REF)
     return (
+        PRI,
         SCENE_CACHE_KEY,
         SCENE_CHUNKS,
-        PRI,
         TXPL,
         TXPRR,
         TXPSF,
@@ -159,8 +164,8 @@ def _(
     range_processing,
     range_sample_freq,
     s6_parameters,
-    sentinel1decoder,
     scene_metadata,
+    sentinel1decoder,
     suppressed_data_time,
 ):
     SWST_BIAS_S = s6_parameters.SWST_BIAS_S
@@ -211,12 +216,19 @@ def _(
         return (round(_offset) - _offset) / range_sample_freq
 
     range_time_shifts = tuple(map(_fractional_shift, raw_tau_segments))
-    return (
-        eta_segments,
-        range_time_shifts,
-        raw_range_counts,
-        raw_tau_segments,
-    )
+    return eta_segments, range_time_shifts, raw_range_counts, raw_tau_segments
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 2 — Range processing
+
+    ### 2.1 — Range Reference Function (DAD §6.1.1)
+
+    Tạo một RRF ở miền tần số với FFT đủ lớn cho SWL lớn nhất của scene.
+    """)
+    return
 
 
 @app.cell
@@ -247,6 +259,17 @@ def _(
     return range_reference_function, transmitted_pulse_samples
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### 2.2 — Raw-data correction và range compression
+
+    Với từng segment: giải mã BAQ (§9.1), ước lượng/sửa I/Q bias (§9.2.1), rồi
+    zero-pad range, FFT, nhân RRF, IFFT và bỏ matched-filter transient (§6.2.2).
+    """)
+    return
+
+
 @app.cell
 def _(
     TXPL,
@@ -269,14 +292,15 @@ def _(
         _iq_bias = np.complex128(
             common.raw_data_correction.estimate_iq_bias(_radar_data)
         )
+        # DAD §6.2.2: SLC giữ Nraw - Ntx mẫu sau matched-filter throw-away.
         _shape = (
             _radar_data.shape[0],
             _radar_data.shape[1] - transmitted_pulse_samples,
         )
 
         def _write(output):
-            # DAD §6.2.2: zero-pad each range line, FFT it, multiply by the
-            # RRF, inverse FFT, and discard the matched-filter transient.
+            # Trừ I/Q bias được gộp vào zero-padding để tránh tạo thêm một bản
+            # sao toàn segment; thứ tự thuật toán vẫn là §9.2.1 trước §6.2.2.
             _, range_times = azimuth_pre_processing.range.compression.compress(
                 _radar_data,
                 raw_tau,
@@ -301,7 +325,10 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2 - Range compression
+    ### 2.3 — Materialize range-compressed segments
+
+    Ghi từng segment đã range-compress vào memmap để các bước DCE và focus dùng
+    chung mà không giữ toàn scene trong RAM.
     """)
     return
 
@@ -362,11 +389,11 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 3 - Range-grid alignment and azimuth assembly
+    ### 2.4 — Black-fill và range-line length (DAD §6.2.2.1–§6.2.2.2)
 
-    The fractional SWST offset is corrected by the RRF phase ramp. Integer
-    offsets are placed on the segments' common range grid using black fill,
-    without resampling the complex measurements.
+    Phần lẻ của dịch chuyển SWST được sửa bằng phase ramp của RRF. Phần nguyên
+    được đặt lên range grid chung bằng black-fill; dữ liệu phức không bị nội suy.
+    Các segment sau đó được nối theo trục azimuth.
     """)
     return
 
@@ -398,7 +425,8 @@ def _(
         ]
 
     def _combine_to_file(destination):
-        # DAD §6.2.2.2: SWL and SWST may change between range lines. Map every
+        # DAD §6.2.2.1-§6.2.2.2: SWST và SWL có thể đổi giữa các range line.
+        # Map từng
         # segment onto one common slant-range grid, using black fill for the
         # integer offsets rather than resampling the complex measurements.
         _prepared = doppler_centroid.estimation.prepare_segments(
@@ -416,26 +444,16 @@ def _(
             _prepared.alignment_summary(),
         )
 
-    @cache.persistent(f"{CACHE_ROOT}/{SCENE_CACHE_KEY}")
-    def _combine_scene(_input_identity, _doppler_source, _range_cache_files):
+    with cache.persistent(
+        "range-aligned", f"{CACHE_ROOT}/{SCENE_CACHE_KEY}"
+    ):
+        input_identity, doppler_source, range_cache_files
         combined_range_cache = (
             f"{CACHE_ROOT}/{SCENE_CACHE_KEY}/range-aligned/data.npy"
         )
         common_tau, combined_eta, alignment_summary = _combine_to_file(
             combined_range_cache
         )
-        return combined_range_cache, common_tau, combined_eta, alignment_summary
-
-    (
-        combined_range_cache,
-        common_tau,
-        combined_eta,
-        alignment_summary,
-    ) = _combine_scene(
-        input_identity,
-        doppler_source,
-        range_cache_files,
-    )
     return (
         alignment_summary,
         combined_eta,
@@ -448,7 +466,11 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 4 - Doppler centroid and effective velocity
+    ## 3 — Doppler Centroid Estimation (DAD §5)
+
+    Theo Figure 5-1: tính DC hình học từ orbit/attitude (§5.1), Fine DC bằng
+    lag-one correlation (§5.2.2), unwrap (§5.3), giải ambiguity tuyệt đối
+    (§5.4), rồi fit polynomial theo range và đo chất lượng (§5.5).
     """)
     return
 
@@ -456,11 +478,11 @@ def _(mo):
 @app.cell
 def _(
     CACHE_ROOT,
-    SCENE_CACHE_KEY,
     PRI,
+    SCENE_CACHE_KEY,
     az_sample_freq,
-    cache,
     c,
+    cache,
     doppler_centroid,
     doppler_source,
     input_identity,
@@ -476,8 +498,7 @@ def _(
         l0file, wavelength_m
     )
 
-    @cache.persistent(f"{CACHE_ROOT}/{SCENE_CACHE_KEY}")
-    def _estimate_doppler(_input_identity, _doppler_source):
+    def _estimate_doppler():
         # DAD §5.2-§5.5: estimate fine DC with lag-one correlation, unwrap it,
         # resolve the PRF ambiguity against the §5.1 orbit/attitude geometry
         # estimate, then fit the range-dependent Doppler polynomials.
@@ -498,22 +519,20 @@ def _(
         )
         return _estimates
 
-    doppler_estimates = _estimate_doppler(
-        input_identity,
-        doppler_source,
-    )
+    with cache.persistent(
+        "doppler-centroid", f"{CACHE_ROOT}/{SCENE_CACHE_KEY}"
+    ):
+        input_identity, doppler_source
+        doppler_estimates = _estimate_doppler()
     return doppler_estimates, doppler_estimator, geometry_dc_estimator
 
 
 @app.cell
 def _(
     combined_eta,
-    common,
     common_tau,
     doppler_estimates,
     doppler_estimator,
-    l0file,
-    wavelength_m,
 ):
     def doppler_centroid_for_line(line_index):
         return doppler_estimator.evaluate_at_line(
@@ -523,29 +542,33 @@ def _(
             slant_range_times_s=common_tau,
         )
 
-    # DAD §9.10: derive the effective radar velocity from the orbit state
-    # vectors. The same range-dependent model feeds SRC, RCMC, and azimuth
-    # compression, so it is evaluated through one shared estimator.
-    velocity_estimator = common.effective_velocity.Estimator.from_level0_product(
-        l0file, wavelength_m
-    )
-    # The scene ends 0.90 s after the product's final state-vector epoch.
-    velocity_estimator.validate_time_coverage(
-        combined_eta, max_extrapolation_s=1.0
-    )
-    return doppler_centroid_for_line, velocity_estimator
+    return (doppler_centroid_for_line,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5 - Focus the complete scene
+    ## 4 — Chuẩn bị block focus Stripmap
 
-    The result is an internal SLC over the valid processing support. Level-1
-    post-processing, radiometric calibration, and SAFE formatting are outside
-    this workflow.
+    Tính effective radar velocity (§9.10), azimuth FM rate (§9.11), overlap và
+    chiều dài block focus (§9.12–§9.13), sau đó xác định support output hợp lệ
+    cho Stripmap SLC (§8.3.1).
     """)
     return
+
+
+@app.cell
+def _(combined_eta, common, l0file, wavelength_m):
+    # DAD §9.10: model effective radar velocity from the orbit state vectors.
+    # One shared estimator feeds SRC, RCMC, and azimuth compression.
+    velocity_estimator = common.effective_velocity.Estimator.from_level0_product(
+        l0file, wavelength_m
+    )
+    # Scene này kết thúc 0,90 s sau epoch state-vector cuối của product.
+    velocity_estimator.validate_time_coverage(
+        combined_eta, max_extrapolation_s=1.0
+    )
+    return (velocity_estimator,)
 
 
 @app.cell
@@ -609,16 +632,28 @@ def _(
     )
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 5 — Azimuth pre-processing và azimuth processing
+
+    Mỗi block đi đúng thứ tự Figure 6-1: azimuth zero-padding (§6.2.1), forward
+    FFT (§6.2.3), SRC (§6.3.1), RCMC (§6.3.2), rồi azimuth compression
+    (§6.3.4). Stripmap không có frequency/time UFR của TOPSAR.
+    """)
+    return
+
+
 @app.cell
 def _(
     AZIMUTH_PROCESSING_BANDWIDTH_HZ,
     CACHE_ROOT,
-    SCENE_CACHE_KEY,
     FOCUS_FFT_LEN,
     PRI,
+    SCENE_CACHE_KEY,
     azimuth_processing,
-    cache,
     c,
+    cache,
     combined_eta,
     combined_range_cache,
     doppler_centroid_for_line,
@@ -638,9 +673,7 @@ def _(
         _source = cache.open_array(combined_range_cache)
 
         def _write_focus(output):
-            # DAD §6.2.1/§6.2.3 and §6.3: process overlapping azimuth blocks
-            # through zero-padding, azimuth FFT, SRC (§6.3.1), RCMC (§6.3.2),
-            # and azimuth matched filtering/compression (§6.3.4).
+            # DAD Figure 6-1: §6.2.1 -> §6.2.3 -> §6.3.1 -> §6.3.2 -> §6.3.4.
             azimuth_processing.processing_blocks.focus_slc(
                 _source,
                 slant_ranges_m,
@@ -669,25 +702,14 @@ def _(
             _write_focus,
         )
 
-    @cache.persistent(f"{CACHE_ROOT}/{SCENE_CACHE_KEY}")
-    def _focus_scene(
-        _input_identity,
-        _focus_source,
-        _doppler_estimates,
-        _combined_range_cache,
+    with cache.persistent(
+        "focused-scene", f"{CACHE_ROOT}/{SCENE_CACHE_KEY}"
     ):
+        input_identity, focus_source, doppler_estimates, combined_range_cache
         focused_cache_file = (
             f"{CACHE_ROOT}/{SCENE_CACHE_KEY}/focused-scene/data.npy"
         )
         _focus_to_file(focused_cache_file)
-        return focused_cache_file
-
-    focused_cache_file = _focus_scene(
-        input_identity,
-        focus_source,
-        doppler_estimates,
-        combined_range_cache,
-    )
     focused_slc = cache.open_array(focused_cache_file)
     return (focused_slc,)
 
@@ -695,18 +717,17 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 6 - Scene SLC result
+    ## 6 — Internal SLC output (DAD §8.3.1)
+
+    Chỉ giữ các sample còn đủ support của azimuth matched filter và RCMC.
+    Level-1 post-processing, radiometric calibration và SAFE formatting nằm
+    ngoài phạm vi workflow này.
     """)
     return
 
 
 @app.cell
-def _(
-    alignment_summary,
-    focus_layout,
-    focused_slc,
-    iq_biases,
-):
+def _(alignment_summary, focus_layout, focused_slc, iq_biases):
     print("SLC shape:", focused_slc.shape)
     print("I/Q bias các segment:", iq_biases)
     print("Overlap focus:", focus_layout.overlap_samples, "lines")
@@ -740,7 +761,7 @@ def _(colors, focused_slc, np, plt):
 def _(colors, focused_slc, np, plt):
     _amplitude = np.abs(focused_slc[9000:10500, 5500:6800])
     _positive = _amplitude[_amplitude > 0]
-    _vmin = np.percentile(_positive, 2.5)
+    _vmin = np.percentile(_positive, 3)
     _vmax = np.percentile(_positive, 98)
 
     plt.figure(figsize=(12, 12), dpi=75)

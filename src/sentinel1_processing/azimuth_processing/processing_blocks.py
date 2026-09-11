@@ -313,12 +313,17 @@ def focus_block(
     src_segment_samples=1024,
     rcmc_sinc_table=None,
 ):
-    """Run Azimuth Pre-Processing and Azimuth Processing for one block."""
-    padded = azimuth_zero_padding.apply(block, fft_length)
+    """Run one Stripmap block in the order of DAD Figure 6-1."""
+    # DAD §6.2.1: Azimuth Zero-Padding.
+    azimuth_padded = azimuth_zero_padding.apply(block, fft_length)
+
+    # DAD §6.2.3: Azimuth Forward FFT -> range-Doppler domain.
     azimuth_baseband_hz, range_doppler = azimuth_forward_fft.apply(
-        padded, azimuth_sample_period_s
+        azimuth_padded, azimuth_sample_period_s
     )
-    secondary_range_compression.apply(
+
+    # DAD §6.3.1: Secondary Range Compression.
+    range_doppler = secondary_range_compression.apply(
         range_doppler,
         azimuth_baseband_hz,
         doppler_centroid_hz,
@@ -329,7 +334,8 @@ def focus_block(
         slant_ranges_m=slant_ranges_m,
         segment_samples=src_segment_samples,
     )
-    corrected = range_cell_migration_correction.apply(
+    # DAD §6.3.2: Range Cell Migration Correction.
+    range_doppler = range_cell_migration_correction.apply(
         range_doppler,
         azimuth_baseband_hz,
         doppler_centroid_hz,
@@ -340,8 +346,9 @@ def focus_block(
         slant_ranges_m=slant_ranges_m,
         sinc_table=rcmc_sinc_table,
     )
+    # DAD §6.3.4: Azimuth Compression -> focused azimuth-time domain.
     return azimuth_compression.compress(
-        corrected,
+        range_doppler,
         azimuth_baseband_hz,
         doppler_centroid_hz,
         effective_velocity_mps,
@@ -373,7 +380,7 @@ def focus_slc(
     output_geometry=None,
     output=None,
 ):
-    """Focus Stripmap blocks and assemble the SLC."""
+    """Focus Stripmap blocks and assemble the valid DAD §8.3.1 SLC support."""
     geometry = output_geometry or L1OutputGeometry(
         0,
         range_compressed.shape[0],
