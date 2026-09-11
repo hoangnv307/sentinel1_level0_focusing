@@ -39,8 +39,9 @@ class Estimator:
     """
     Estimate V_r(R, eta) block-by-block from actual orbit geometry.
 
-    Orbit interpolation uses a cubic Hermite spline so that both measured
-    position and velocity state vectors are honoured at each ephemeris epoch.
+    The normal path honours decoded L0 position and velocity state vectors.
+    ``smooth_positions`` fits a scene-scale orbit to L0 positions when a
+    stable derivative is needed instead of the quantised packet velocities.
     """
 
     def __init__(
@@ -50,6 +51,7 @@ class Estimator:
         velocities_ecef_mps,
         wavelength_m,
         *,
+        smooth_positions=False,
         ellipsoid_a_m=WGS84_A_M,
         ellipsoid_b_m=WGS84_B_M,
     ):
@@ -69,14 +71,26 @@ class Estimator:
         if np.any(np.diff(self.orbit_times_s) <= 0):
             raise ValueError("orbit_times_s must be strictly increasing.")
 
-        # r'(t) = v(t) is enforced at every supplied state-vector epoch.
-        self._position_spline = CubicHermiteSpline(
-            self.orbit_times_s,
-            self.positions_ecef_m,
-            self.velocities_ecef_mps,
-            axis=0,
-            extrapolate=True,
-        )
+        self._position_polynomials = None
+        self._position_spline = None
+        if smooth_positions:
+            # ponytail: degree 5 is sufficient for this 31 s scene; use an
+            # AUX orbit product instead when precise orbit data is available.
+            degree = min(5, self.orbit_times_s.size - 1)
+            self._position_polynomials = tuple(
+                np.polynomial.Polynomial.fit(
+                    self.orbit_times_s, self.positions_ecef_m[:, axis], degree
+                )
+                for axis in range(3)
+            )
+        else:
+            self._position_spline = CubicHermiteSpline(
+                self.orbit_times_s,
+                self.positions_ecef_m,
+                self.velocities_ecef_mps,
+                axis=0,
+                extrapolate=True,
+            )
 
     @classmethod
     def from_ephemeris(
@@ -84,6 +98,7 @@ class Estimator:
         ephemeris,
         wavelength_m,
         *,
+        smooth_positions=False,
         ellipsoid_a_m=WGS84_A_M,
         ellipsoid_b_m=WGS84_B_M,
     ):
@@ -113,14 +128,21 @@ class Estimator:
 
         return cls(
             t, p, v, wavelength_m,
+            smooth_positions=smooth_positions,
             ellipsoid_a_m=ellipsoid_a_m,
             ellipsoid_b_m=ellipsoid_b_m,
         )
 
     @classmethod
-    def from_level0_product(cls, level0_product, wavelength_m):
+    def from_level0_product(
+        cls, level0_product, wavelength_m, *, smooth_positions=False
+    ):
         """Build the DAD Section 9.10 estimator from a decoded L0 product."""
-        return cls.from_ephemeris(level0_product.ephemeris, wavelength_m)
+        return cls.from_ephemeris(
+            level0_product.ephemeris,
+            wavelength_m,
+            smooth_positions=smooth_positions,
+        )
 
     def validate_time_coverage(self, azimuth_times_s, *, max_extrapolation_s=0.0):
         """Require azimuth times to lie within the allowed orbit interval."""
@@ -142,11 +164,24 @@ class Estimator:
 
     def position(self, time_s):
         """Interpolated ECEF spacecraft position [m]."""
-        return np.asarray(self._position_spline(time_s), dtype=np.float64)
+        if self._position_spline is not None:
+            return np.asarray(self._position_spline(time_s), dtype=np.float64)
+        return np.stack(
+            [polynomial(time_s) for polynomial in self._position_polynomials],
+            axis=-1,
+        ).astype(np.float64)
 
     def velocity(self, time_s):
         """Derivative of the interpolated orbit [m/s]."""
-        return np.asarray(self._position_spline(time_s, 1), dtype=np.float64)
+        if self._position_spline is not None:
+            return np.asarray(self._position_spline(time_s, 1), dtype=np.float64)
+        return np.stack(
+            [
+                polynomial.deriv()(time_s)
+                for polynomial in self._position_polynomials
+            ],
+            axis=-1,
+        ).astype(np.float64)
 
     # ------------------------------------------------------------------
     # Ground-target geometry

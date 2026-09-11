@@ -528,18 +528,15 @@ def _(
 
 
 @app.cell
-def _(
-    combined_eta,
-    common_tau,
-    doppler_estimates,
-    doppler_estimator,
-):
-    def doppler_centroid_for_line(line_index):
+def _(combined_eta, common_tau, doppler_estimates, doppler_estimator):
+    def doppler_centroid_for_line(
+        line_index, slant_range_times_s=common_tau
+    ):
         return doppler_estimator.evaluate_at_line(
             doppler_estimates,
             line_index=line_index,
             azimuth_times_s=combined_eta,
-            slant_range_times_s=common_tau,
+            slant_range_times_s=slant_range_times_s,
         )
 
     return (doppler_centroid_for_line,)
@@ -564,11 +561,18 @@ def _(combined_eta, common, l0file, wavelength_m):
     velocity_estimator = common.effective_velocity.Estimator.from_level0_product(
         l0file, wavelength_m
     )
+    # L0 packet velocities are quantised; smooth the L0 positions only for the
+    # scene-wide worst-case matched-filter support calculation.
+    layout_velocity_estimator = (
+        common.effective_velocity.Estimator.from_level0_product(
+            l0file, wavelength_m, smooth_positions=True
+        )
+    )
     # Scene này kết thúc 0,90 s sau epoch state-vector cuối của product.
     velocity_estimator.validate_time_coverage(
         combined_eta, max_extrapolation_s=1.0
     )
-    return (velocity_estimator,)
+    return layout_velocity_estimator, velocity_estimator
 
 
 @app.cell
@@ -580,7 +584,10 @@ def _(
     common_tau,
     doppler_centroid_for_line,
     geometry_dc_estimator,
+    layout_velocity_estimator,
+    np,
     range_sample_freq,
+    raw_tau_segments,
     s6_parameters,
     velocity_estimator,
     wavelength_m,
@@ -588,17 +595,24 @@ def _(
     FOCUS_FFT_LEN = s6_parameters.FOCUS_FFT_LENGTH
     AZIMUTH_PROCESSING_BANDWIDTH_HZ = s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ
     slant_ranges_m = common_tau * c / 2.0
-    # DAD §9.12-§9.13: choose the Stripmap focusing-block overlap and FFT
-    # length from the azimuth matched-filter support over the whole scene.
+    # DAD §9.12-§9.13: tính A trên maximum far range của raw L0;
+    # bandwidth, maxFdc, FFT length và extra overlap đến từ AUX_PP1.
+    raw_range_extent_s = np.array([
+        min(tau[0] for tau in raw_tau_segments),
+        max(tau[-1] for tau in raw_tau_segments),
+    ])
+    raw_range_extent_m = raw_range_extent_s * c / 2.0
     focus_layout = azimuth_processing.processing_blocks.calculate_layout(
         len(combined_eta),
-        slant_ranges_m,
+        raw_range_extent_m,
         combined_eta,
-        doppler_centroid_for_line,
-        velocity_estimator,
+        layout_velocity_estimator,
         wavelength_m=wavelength_m,
         azimuth_sample_frequency_hz=az_sample_freq,
         processing_bandwidth_hz=AZIMUTH_PROCESSING_BANDWIDTH_HZ,
+        max_doppler_centroid_hz=(
+            s6_parameters.FOCUS_MAX_DOPPLER_CENTROID_HZ
+        ),
         fft_length=FOCUS_FFT_LEN,
         extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
     )
@@ -622,6 +636,10 @@ def _(
         rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
         rcmc_phases=s6_parameters.RCMC_PHASES,
         apply_coarse_bistatic_delay_correction=True,
+        support_slant_ranges_m=raw_range_extent_m,
+        support_doppler_centroid_for_line=lambda line: (
+            doppler_centroid_for_line(line, raw_range_extent_s)
+        ),
     )
     return (
         AZIMUTH_PROCESSING_BANDWIDTH_HZ,
@@ -730,7 +748,9 @@ def _(mo):
 def _(alignment_summary, focus_layout, focused_slc, iq_biases):
     print("SLC shape:", focused_slc.shape)
     print("I/Q bias các segment:", iq_biases)
+    print("Azimuth matched-filter support:", focus_layout.matched_filter_support_samples)
     print("Overlap focus:", focus_layout.overlap_samples, "lines")
+    print("Azimuth block step:", focus_layout.step_samples, "lines")
     alignment_summary
     return
 
@@ -739,8 +759,8 @@ def _(alignment_summary, focus_layout, focused_slc, iq_biases):
 def _(colors, focused_slc, np, plt):
     _amplitude = np.abs(focused_slc[::20, ::20])
     _positive = _amplitude[_amplitude > 0]
-    _vmin = np.percentile(_positive, 5)
-    _vmax = np.percentile(_positive, 99.8)
+    _vmin = np.percentile(_positive, 2)
+    _vmax = np.percentile(_positive, 98)
 
     plt.figure(figsize=(12, 12), dpi=75)
     plt.title("Focused SLC — toàn scene")
@@ -761,7 +781,7 @@ def _(colors, focused_slc, np, plt):
 def _(colors, focused_slc, np, plt):
     _amplitude = np.abs(focused_slc[9000:10500, 5500:6800])
     _positive = _amplitude[_amplitude > 0]
-    _vmin = np.percentile(_positive, 3)
+    _vmin = np.percentile(_positive, 2)
     _vmax = np.percentile(_positive, 98)
 
     plt.figure(figsize=(12, 12), dpi=75)

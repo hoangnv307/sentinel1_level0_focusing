@@ -46,10 +46,11 @@ DCE_RMS_ERROR_THRESHOLD_HZ = 20.0
 # Empirical L0-estimate/L1 Fine-DC parity limit for the supplied S6 scene.
 # This is a regression-test threshold, not the AUX_PP1 polynomial-fit limit.
 DCE_L1_FINE_RMSE_THRESHOLD_HZ = 3.0
-# NOTE: maxDeltaFdc (100 Hz) giới hạn biến thiên DC giữa các azimuth block, dùng
-# tính overlap focus (DAD §9.12) — KHÔNG phải giới hạn |f_DC| và không suy ra N_amb.
 FOCUS_AZIMUTH_BANDWIDTH_HZ = 1398.0
 FOCUS_FFT_LENGTH = 4096
+# AUX_PP1 maxFdc: maximum expected absolute DC used to size the SM matched
+# filter throwaway; extraAziProcBlockOverlap covers block-to-block DC change.
+FOCUS_MAX_DOPPLER_CENTROID_HZ = 100.0
 EXTRA_AZIMUTH_OVERLAP_SAMPLES = 50
 RRF_SPECTRUM = "Extended Tapered"
 APPLY_ELEVATION_ANTENNA_PATTERN = True

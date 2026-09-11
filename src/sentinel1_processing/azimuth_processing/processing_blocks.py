@@ -121,55 +121,70 @@ def calculate_layout(
     num_azimuth_lines,
     slant_ranges_m,
     packet_azimuth_times_s,
-    doppler_centroid_for_line,
     velocity_estimator,
     *,
     wavelength_m,
     azimuth_sample_frequency_hz,
     processing_bandwidth_hz,
+    max_doppler_centroid_hz,
     fft_length=4096,
     extra_overlap_samples=50,
 ):
-    """Calculate Stripmap block overlap from DAD Sections 9.12 and 9.13."""
-    probes = np.unique(np.round(
-        np.linspace(0, num_azimuth_lines - 1, 5)
-    ).astype(np.int64))
-    supports = []
+    """Calculate the Stripmap block grid from L0 range/orbit and AUX_PP1."""
+    ranges = np.asarray(slant_ranges_m, dtype=np.float64)
+    times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
+    if (
+        ranges.ndim != 1
+        or ranges.size < 2
+        or np.any(np.diff(ranges) <= 0)
+    ):
+        raise ValueError("slant_ranges_m must be a strictly increasing vector.")
+    if (
+        times.shape != (int(num_azimuth_lines),)
+        or times.size < fft_length
+        or np.any(np.diff(times) <= 0)
+    ):
+        raise ValueError("packet_azimuth_times_s must cover one complete block.")
 
-    for index in probes:
-        doppler_centroid_hz = doppler_centroid_for_line(index)
-        velocity_mps = velocity_estimator.evaluate_block(
-            block_center_time_s=packet_azimuth_times_s[index],
-            slant_range_m=slant_ranges_m,
-            fdc_hz=doppler_centroid_hz,
+    def support_at(center_line):
+        center_time = np.interp(center_line, np.arange(times.size), times)
+        velocity = velocity_estimator.evaluate_block(
+            block_center_time_s=center_time,
+            slant_range_m=ranges,
+            fdc_hz=max_doppler_centroid_hz,
             azimuth_bandwidth_hz=processing_bandwidth_hz,
-            n_control_points=9,
+            n_control_points=min(9, ranges.size),
             range_polynomial_degree=2,
         )
         far_rate = azimuth_compression.fm_rate_magnitude(
-            slant_ranges_m[-1],
-            velocity_mps[-1],
-            doppler_centroid_hz[-1],
-            wavelength_m,
+            ranges[-1], velocity[-1], max_doppler_centroid_hz, wavelength_m
         )
         if not np.isfinite(far_rate) or far_rate <= 0.0:
             raise ValueError("Invalid far-range azimuth FM rate.")
-        supports.append(int(np.ceil(
+        return int(np.ceil(
             processing_bandwidth_hz / far_rate * azimuth_sample_frequency_hz
-        )))
+        ))
 
-    support = max(supports)
-    overlap = support + extra_overlap_samples
-    if overlap >= fft_length:
-        raise ValueError("Azimuth overlap must be smaller than fft_length.")
-
-    return ProcessingBlockLayout(
-        matched_filter_support_samples=support,
-        overlap_samples=overlap,
-        step_samples=fft_length - overlap,
-        support_probe_indices=probes,
-        support_probe_samples=tuple(supports),
-    )
+    support = support_at((fft_length - 1) / 2.0)
+    for _ in range(10):
+        overlap = support + extra_overlap_samples
+        if overlap >= fft_length:
+            raise ValueError("Azimuth overlap must be smaller than fft_length.")
+        step = fft_length - overlap
+        starts = np.arange(0, times.size - fft_length + 1, step)
+        centers = starts + (fft_length - 1) / 2.0
+        supports = tuple(map(support_at, centers))
+        updated = max(support, *supports)
+        if updated == support:
+            return ProcessingBlockLayout(
+                matched_filter_support_samples=support,
+                overlap_samples=overlap,
+                step_samples=step,
+                support_probe_indices=centers,
+                support_probe_samples=supports,
+            )
+        support = updated
+    raise RuntimeError("Azimuth block layout did not converge.")
 
 
 def derive_output_geometry(
@@ -189,9 +204,25 @@ def derive_output_geometry(
     rcmc_kernel_length=16,
     rcmc_phases=64,
     apply_coarse_bistatic_delay_correction=False,
+    support_slant_ranges_m=None,
+    support_doppler_centroid_for_line=None,
 ):
     """Derive the valid Stripmap SLC support from DAD §6.3.2 and §8.3.1."""
     ranges = np.asarray(slant_ranges_m, dtype=np.float64)
+    if (support_slant_ranges_m is None) != (
+        support_doppler_centroid_for_line is None
+    ):
+        raise ValueError("Support ranges and Doppler provider must be supplied together.")
+    complete_support = support_slant_ranges_m is not None
+    support_ranges = np.asarray(
+        ranges if support_slant_ranges_m is None else support_slant_ranges_m,
+        dtype=np.float64,
+    )
+    support_dc_provider = (
+        doppler_centroid_for_line
+        if support_doppler_centroid_for_line is None
+        else support_doppler_centroid_for_line
+    )
     times = np.asarray(packet_azimuth_times_s, dtype=np.float64)
     starts = list(range(0, times.size - fft_length + 1, layout.step_samples))
     if not starts:
@@ -201,18 +232,18 @@ def derive_output_geometry(
     half_support = 0.5 * layout.matched_filter_support_samples
     extra_overlap = layout.overlap_samples - layout.matched_filter_support_samples
 
-    def state(line, dc_provider=doppler_centroid_for_line):
+    def state(line, dc_provider=doppler_centroid_for_line, state_ranges=ranges):
         fdc = dc_provider(line)
         velocity = velocity_estimator.evaluate_block(
             block_center_time_s=times[line],
-            slant_range_m=ranges,
+            slant_range_m=state_ranges,
             fdc_hz=fdc,
             azimuth_bandwidth_hz=processing_bandwidth_hz,
             n_control_points=9,
             range_polynomial_degree=2,
         )
         rate = azimuth_compression.fm_rate_magnitude(
-            ranges, velocity, fdc, wavelength_m
+            state_ranges, velocity, fdc, wavelength_m
         )
         return fdc, velocity, rate, -fdc / rate
 
@@ -240,16 +271,23 @@ def derive_output_geometry(
     first_output_time = float(times[0] + np.ceil(anchor_offset_lines) * pri)
 
     last_start = starts[-1]
-    _, _, last_rate, last_dc_time = state(times.size - 1)
-    # Rearranged Eq. 8-19: -min(-Tmf/2 + eta_c) is equivalent
-    # to max(Tmf/2 - eta_c). Keep Tmf continuous and quantize only the final
-    # boundary; Eq. 9-24's integer A applies to block overlap, not Eq. 8-19.
-    trailing_throwaway = int(np.floor(
-        np.max(
+    if complete_support:
+        last_center = last_start + (fft_length - 1) // 2
+        _, _, last_rate, last_dc_time = state(
+            last_center, support_dc_provider, support_ranges
+        )
+        # DAD Eq. 8-19: use the final block's own state and complete L0 range.
+        trailing_throwaway = int(np.ceil(np.max(
+            0.5 * processing_bandwidth_hz / last_rate / pri
+            + extra_overlap
+            + last_dc_time / pri
+        )))
+    else:
+        _, _, last_rate, last_dc_time = state(times.size - 1)
+        trailing_throwaway = int(np.floor(np.max(
             0.5 * processing_bandwidth_hz / last_rate / pri
             - last_dc_time / pri
-        )
-    ))
+        )))
     azimuth_stop = last_start + fft_length - trailing_throwaway
 
     offsets, _ = range_cell_migration_correction.build_interpolation_table(

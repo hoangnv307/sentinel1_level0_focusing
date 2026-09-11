@@ -30,6 +30,13 @@ class EphemerisTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             estimator.validate_time_coverage([0.5, 2.5])
 
+        np.testing.assert_allclose(estimator.position([1, 2, 3])[:, 0], [1, 2, 3])
+        np.testing.assert_allclose(estimator.velocity(2), [1, 0, 0], atol=1e-12)
+        smooth = common.effective_velocity.Estimator.from_ephemeris(
+            ephemeris, 0.05, smooth_positions=True
+        )
+        np.testing.assert_allclose(smooth.velocity(2), [1, 0, 0], atol=1e-12)
+
 
 if __name__ == "__main__":
     unittest.main()

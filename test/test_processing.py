@@ -22,6 +22,31 @@ import sentinel1_processing.s6_parameters as s6_parameters
 
 
 class ProcessingTest(unittest.TestCase):
+    def test_layout_uses_actual_block_centres(self):
+        velocity = SimpleNamespace(
+            evaluate_block=lambda **kwargs: np.full(
+                len(kwargs["slant_range_m"]), 10.0
+            )
+        )
+        layout = azimuth_processing.processing_blocks.calculate_layout(
+            2500,
+            np.array([50.0, 100.0]),
+            np.arange(2500.0),
+            velocity,
+            wavelength_m=1.0,
+            azimuth_sample_frequency_hz=100.0,
+            processing_bandwidth_hz=10.0,
+            max_doppler_centroid_hz=0.0,
+            fft_length=1000,
+            extra_overlap_samples=50,
+        )
+
+        self.assertEqual(layout.matched_filter_support_samples, 500)
+        self.assertEqual(layout.step_samples, 450)
+        np.testing.assert_array_equal(
+            layout.support_probe_indices, [499.5, 949.5, 1399.5, 1849.5]
+        )
+
     def test_pdu_stage3_sample_count_matches_s6_packets(self):
         # PDU Tables 5.1-1/5.1-2 for RGDEC 9 (L/M=5/16, offset=97).
         count = downlink_header_validation.sample_count.rgdec9_stage3_rx_samples
@@ -260,6 +285,54 @@ class ProcessingTest(unittest.TestCase):
         anchor_time = 6.25
         self.assertLess(geometry.first_zero_doppler_time_s - 1.0, anchor_time)
         self.assertLessEqual(anchor_time, geometry.first_zero_doppler_time_s)
+
+    def test_output_geometry_uses_final_block_and_complete_l0_range(self):
+        support_lines = []
+        layout = azimuth_processing.processing_blocks.ProcessingBlockLayout(
+            matched_filter_support_samples=10,
+            overlap_samples=12,
+            step_samples=8,
+            support_probe_indices=np.array([9.5]),
+            support_probe_samples=(10,),
+        )
+        with (
+            patch.object(
+                azimuth_processing.processing_blocks.azimuth_compression,
+                "fm_rate_magnitude",
+                side_effect=lambda ranges, *_args: np.ones_like(ranges),
+            ),
+            patch.object(
+                azimuth_processing.processing_blocks.range_cell_migration_correction,
+                "build_interpolation_table",
+                return_value=(np.array([0]), np.ones((1, 1))),
+            ),
+        ):
+            geometry = azimuth_processing.processing_blocks.derive_output_geometry(
+                np.arange(20.0) + 1_000.0,
+                np.arange(40.0),
+                lambda _line: np.zeros(20),
+                lambda _line: np.zeros(20),
+                SimpleNamespace(
+                    evaluate_block=lambda **kwargs: np.full(
+                        len(kwargs["slant_range_m"]), 1e9
+                    )
+                ),
+                layout,
+                wavelength_m=1e-6,
+                speed_of_light_mps=2.0,
+                azimuth_sample_period_s=1.0,
+                range_sample_frequency_hz=1.0,
+                processing_bandwidth_hz=10.0,
+                fft_length=20,
+                rcmc_kernel_length=1,
+                support_slant_ranges_m=np.array([1_000.0, 1_020.0]),
+                support_doppler_centroid_for_line=lambda line: (
+                    support_lines.append(line) or np.ones(2)
+                ),
+            )
+
+        self.assertEqual(support_lines, [25])
+        self.assertEqual(geometry.azimuth_stop_line, 30)
 
     def test_prepared_scene_aligns_segments_into_supplied_array(self):
         first = doppler_centroid.estimation.Segment(
@@ -537,31 +610,74 @@ class ProcessingTest(unittest.TestCase):
         prepared = doppler_centroid.estimation.prepare_segments(
             segments, prf_hz=estimator.prf_hz
         )
-        doppler_for_line = lambda line: estimator.evaluate_at_line(
-            estimates,
-            line_index=line,
-            azimuth_times_s=prepared.azimuth_times_s,
-            slant_range_times_s=prepared.common_slant_range_times_s,
-        )
+        def doppler_for_line(
+            line, slant_range_times_s=prepared.common_slant_range_times_s
+        ):
+            return estimator.evaluate_at_line(
+                estimates,
+                line_index=line,
+                azimuth_times_s=prepared.azimuth_times_s,
+                slant_range_times_s=slant_range_times_s,
+            )
         velocity = common.effective_velocity.Estimator.from_level0_product(
             l0file, s6_parameters.RADAR_WAVELENGTH_M
+        )
+        layout_velocity = common.effective_velocity.Estimator.from_level0_product(
+            l0file,
+            s6_parameters.RADAR_WAVELENGTH_M,
+            smooth_positions=True,
         )
         slant_ranges_m = (
             prepared.common_slant_range_times_s
             * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
             / 2.0
         )
+        raw_range_extent_s = np.array([
+            min(values[0][0] for values in native_axes.values()),
+            max(values[0][-1] for values in native_axes.values()),
+        ])
+        raw_range_extent_m = (
+            raw_range_extent_s
+            * sentinel1decoder.constants.SPEED_OF_LIGHT_MPS
+            / 2.0
+        )
         layout = azimuth_processing.processing_blocks.calculate_layout(
             prepared.num_azimuth_lines,
-            slant_ranges_m,
+            raw_range_extent_m,
             prepared.azimuth_times_s,
-            doppler_for_line,
-            velocity,
+            layout_velocity,
             wavelength_m=s6_parameters.RADAR_WAVELENGTH_M,
             azimuth_sample_frequency_hz=estimator.prf_hz,
             processing_bandwidth_hz=s6_parameters.FOCUS_AZIMUTH_BANDWIDTH_HZ,
+            max_doppler_centroid_hz=(
+                s6_parameters.FOCUS_MAX_DOPPLER_CENTROID_HZ
+            ),
             fft_length=s6_parameters.FOCUS_FFT_LENGTH,
             extra_overlap_samples=s6_parameters.EXTRA_AZIMUTH_OVERLAP_SAMPLES,
+        )
+        self.assertEqual(layout.matched_filter_support_samples, 1216)
+        self.assertEqual(layout.overlap_samples, 1266)
+        self.assertEqual(layout.step_samples, 2830)
+        fm_records = annotation_root.findall(
+            "./generalAnnotation/azimuthFmRateList/azimuthFmRate"
+        )
+        zero_dop_minus_acq_s = float(
+            annotation_root.findtext(
+                "./imageAnnotation/imageInformation/zeroDopMinusAcqTime"
+            )
+        )
+        reference_centres_s = np.array([
+            Time(record.findtext("azimuthTime"), format="isot", scale="utc").gps
+            - zero_dop_minus_acq_s
+            for record in fm_records
+        ])
+        calculated_centres_s = np.interp(
+            layout.support_probe_indices,
+            np.arange(prepared.num_azimuth_lines),
+            prepared.azimuth_times_s,
+        )
+        np.testing.assert_allclose(
+            calculated_centres_s, reference_centres_s, atol=25e-6, rtol=0.0
         )
         geometry = azimuth_processing.processing_blocks.derive_output_geometry(
             slant_ranges_m,
@@ -581,6 +697,10 @@ class ProcessingTest(unittest.TestCase):
             rcmc_kernel_length=s6_parameters.RCMC_KERNEL_LENGTH,
             rcmc_phases=s6_parameters.RCMC_PHASES,
             apply_coarse_bistatic_delay_correction=True,
+            support_slant_ranges_m=raw_range_extent_m,
+            support_doppler_centroid_for_line=lambda line: doppler_for_line(
+                line, raw_range_extent_s
+            ),
         )
         image_info = annotation_root.find("./imageAnnotation/imageInformation")
         self.assertEqual(geometry.shape, (

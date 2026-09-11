@@ -53,6 +53,10 @@ All user-facing docs/commits are in Vietnamese.
 
 ## Notebook conventions
 
+- Mọi tham số và dữ liệu dùng để tạo SLC phải xuất phát từ sản phẩm Level-0
+  hoặc các file AUX (`AUX_INS`, `AUX_PP1`, `AUX_CAL`). Metadata Level-1 chỉ
+  được dùng trong test/chẩn đoán để tham khảo và đối chiếu; không được đưa giá
+  trị suy ra từ Level-1 trở lại pipeline xử lý.
 - Cells are `@app.cell`; each cell declares its global deps via its `def _(...)` params.
 - **Separate computation from display**: heavy compute goes in its own cell, then a
   separate display cell (`print`, `md`, `plt`) reads its result. Do NOT put
