@@ -782,7 +782,7 @@ def _(colors, focused_slc, np, plt):
     _amplitude = np.abs(focused_slc[9000:10500, 5500:6800])
     _positive = _amplitude[_amplitude > 0]
     _vmin = np.percentile(_positive, 2)
-    _vmax = np.percentile(_positive, 98)
+    _vmax = np.percentile(_positive, 99)
 
     plt.figure(figsize=(12, 12), dpi=75)
     plt.title("Focused SLC — chi tiết")
