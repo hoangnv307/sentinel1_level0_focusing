@@ -1,7 +1,61 @@
 # Sentinel-1 Level-0 Decoding Demo
 
-Pipeline xử lý Sentinel-1 Level-0 thành ảnh SLC, phát triển từ dự án của
+Dự án mô phỏng/tái hiện quá trình lấy nét ảnh Sentinel-1 từ dữ liệu thô
+**Level-0 (L0) lên Level-1 (L1)**, trước mắt là ảnh **SLC** trong hình học
+slant range. Pipeline phát triển từ dự án của
 [Rich Hall](https://github.com/Rich-Hall/sentinel1decoder).
+
+## Dữ liệu và tài liệu tham khảo
+
+Dữ liệu nguồn nằm tại **`~/sar_data/focusing_data/`**, bên ngoài repo. Tại lần
+khảo sát 20/10/2026, có một bộ dữ liệu `product_1` với ba phần:
+
+```text
+~/sar_data/focusing_data/product_1/
+├── level-0/       # Raw packet VV .dat và manifest.safe
+├── level-1/       # XML L1 để tham chiếu kết quả
+└── auxiliary/     # Các gói SAFE AUX_INS, AUX_PP1 và AUX_CAL
+```
+
+| Phần | Vai trò |
+|---|---|
+| `level-0/` | Dữ liệu thô để giải mã I/Q và lấy metadata packet phục vụ lấy nét. File hiện có: `s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat` (khoảng 224 MiB). |
+| `level-1/` | `manifest.safe`, annotation chính, calibration, noise và RFI XML; dùng đối chiếu DCE, FM rate, timing, hình học và chất lượng. Các XML đặt phẳng; hiện chưa có ảnh measurement TIFF để so sánh pixel. |
+| `auxiliary/` | AUX_INS mô tả thiết bị, nominal chirp, timing, LUT giải mã và hiệu chỉnh; AUX_PP1 chứa cấu hình bộ xử lý; AUX_CAL chứa mẫu anten và hệ số hiệu chuẩn. Mỗi gói gồm manifest, payload XML trong `data/` và XSD trong `support/`. |
+
+`product_1` là cảnh **Sentinel-1A, Stripmap/S4, VV**, thu ngày **03/09/2025**,
+absolute orbit `60827`, relative orbit `30`, chiều bay descending. L1 tham
+chiếu là SLC do IPF `003.92` tạo, annotation mô tả ảnh 14.628 × 18.322 pixel.
+Manifest gốc còn liệt kê VH và nhiều file không có trong bản trích cục bộ;
+không mặc định bộ dữ liệu này là SAFE đầy đủ.
+
+**Quy tắc nguồn dữ liệu:** dữ liệu và tham số tạo ảnh phải lấy từ L0/AUX.
+Metadata L1 chỉ dùng trong test/chẩn đoán, không đưa giá trị tham chiếu trở lại
+pipeline. Bản AUX_INS hiện có (`G20251015T084505`) khác bản manifest L1 ghi
+đã sử dụng (`G20250116T092837`); đây là provenance, không có nghĩa bản hiện
+tại không áp dụng được. Xem quy tắc chọn AUX trong [AGENTS.md](AGENTS.md).
+AUX_PP1/AUX_CAL trùng tên phiên bản. File
+orbit AUX_RESORB được L1 ghi nhận chưa có trong bộ dữ liệu.
+
+**Cấu hình hiện hành:** notebook vẫn dùng cảnh S6 tại `data/sao_paulo/`,
+`SCENE_CHUNKS=(13, 14)` và `s6_parameters.py`. Chưa chuyển pipeline sang S4;
+khi chuyển cần xác định lại chunk và cấu hình từ L0/AUX của `product_1`.
+
+Thư mục [`references/`](references/) chứa tài liệu tham khảo thuật toán,
+hiện có **Sentinel-1 Level 1 Detailed Algorithm Definition (DAD)**,
+SEN-TN-52-7445 / MPC-0307, Issue/Revision **2/5**, ngày **17/11/2022**.
+Đây là cơ sở đối chiếu luồng xử lý và công thức; cấu hình cụ thể lấy từ AUX.
+
+- [Workflow L0 → L1 theo DAD](docs/sentinel1_l0_to_l1_workflow.md): luồng chi
+  tiết, nguồn tham số, miền dữ liệu, chuẩn hóa và checklist kiểm tra.
+- [Context dành cho các lần phát triển sau](AGENTS.md): danh mục dữ liệu,
+  nội dung XML, khác biệt phiên bản và quy tắc sửa notebook.
+- [Báo cáo kiểm tra tham số và thử nghiệm DCE S4/VV](docs/sentinel1_dce_audit.md):
+  kiểm kê nguồn tham số, thử bỏ từng hiệu chỉnh, độ nhạy estimator và giới hạn xác nhận.
+- [Bước RRF tiếp theo](docs/sentinel1_rrf_followup.md): nominal chirp từ AUX,
+  Parseval/support và hai phương án phổ mở rộng được đề xuất để thử nghiệm.
+- [Raw data analysis từ L0](docs/sentinel1_raw_data_analysis.md): API cấu hình
+  theo DAD §4.1, significance, 17 test cụ thể và kết quả chạy dữ liệu thật.
 
 ## Cài đặt
 
@@ -45,6 +99,124 @@ Các kết quả được lưu gồm:
 Khi một cache mới thay thế cache cũ của cùng công đoạn, notebook tự xóa bản
 cũ sau khi Focus hoàn tất để thư mục cache không tăng mãi.
 
+## Demo Doppler Centroid cho S4/VV
+
+```bash
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py
+```
+
+Demo mặc định đọc `~/sar_data/focusing_data/product_1`; có thể đổi bằng
+`--product <thư-mục>` và `--output <thư-mục>`. Kết quả là
+`output/sentinel-1/product_1_dce/doppler_centroid.json` và biểu đồ
+`doppler_centroid.png`. Dữ liệu range-compressed tạm dùng memmap, tự xóa sau
+khi chạy; cần khoảng 2,3 GiB dung lượng tạm cho bộ S4 hiện tại.
+
+**Ngoại lệ nghiên cứu theo yêu cầu người dùng:** demo này suy layout DCE từ
+annotation L1 rồi kiểm tra trên lưới L0; pipeline focus chính vẫn giữ quy tắc
+L0/AUX. Fine DC được tính từ tín hiệu L0 đã giải mã, sửa I/Q bias và range
+compression; ambiguity được giải bằng orbit/attitude L0. Tần số và polynomial
+L1 chỉ dùng để vẽ/đo sai lệch sau ước lượng, không thay thế kết quả tính.
+
+| Tham số | Cấu hình demo / căn cứ |
+|---|---|
+| Azimuth block | 6.000 dòng; từ duration Fine DCE L1 và PRI L0. |
+| Vị trí block | Dòng L0 `0` và `10.500` (0-based), mỗi block 6.000 dòng; lịch riêng của cảnh này, không phải bước đều 3.000. |
+| Quy đổi thời gian để suy lịch | `zeroDopMinusAcqTime=0,335899 s` từ L1; geometry provider vẫn nhận acquisition time L0. |
+| Range block | 20 block × 1.000 mẫu, phân bố đều với start index lấy floor; overlap khoảng 96–97 mẫu. |
+| Range ROI / polynomial origin | Vùng giao support range-compressed hai chunk: 18.170 mẫu, origin `0,005546845595867 s` suy từ L0/AUX; khớp t0 và các tâm Fine DC L1. |
+| Polynomial / fit weights | Bậc hai, không trọng số; fit lại 20 điểm L1 tái tạo polynomial và RMS annotation trong sai số làm tròn. |
+| ACCC | Power weighting theo DAD; không suy được duy nhất weighting IPF từ annotation. |
+| Ngưỡng RMS | 20 Hz từ AUX_PP1 `SM_SL1__1/dcProcParams`. |
+| Unwrap / outlier | FFT 4.096 điểm, 3,5σ, tối đa 5 vòng fit; lựa chọn demo, chưa suy được từ L1. |
+
+Giả thuyết range layout là block đầu bắt đầu ở near range của vùng giao;
+demo kiểm tra toàn bộ tâm block khớp annotation trong 0,02 sample. Không
+khẳng định đây là cấu hình IPF duy nhất có thể tạo các tâm đó. JSON lưu cấu
+hình, nguồn file, I/Q bias, các ước lượng, coherence, valid mask, RMS và sai
+lệch với L1. Nếu fit RMS vượt ngưỡng, `selected_source` chuyển sang geometry;
+data estimate vẫn được giữ để chẩn đoán.
+
+Chế độ mặc định chưa phải tái hiện DCE đầy đủ của IPF: chưa áp PG drift, receiver
+variation, EAP/RSL hoặc RFI mitigation; từ cập nhật 21/10/2026, bias lấy từ
+raw analysis trên toàn bộ echo hợp lệ, dùng chung hai chunk. Batch 256
+không còn giới hạn số echo phân tích. Phạm vi chọn mẫu có thể cấu hình
+qua `--analysis-start-line`, `--analysis-step`, `--analysis-lines`,
+`--analysis-range-start`, `--analysis-range-stop`, `--batch-lines`.
+Xem [kết quả và các test raw analysis](docs/sentinel1_raw_data_analysis.md).
+Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
+kết parity hay ngưỡng pass/fail của demo.
+
+Kết quả chạy trên toàn bộ 16.500 echo của `product_1`:
+
+| Block (0-based, stop exclusive) | RMS fit | RMSE Fine DC so với L1 | RMSE polynomial so với L1 |
+|---|---|---|---|
+| `[0, 6000)` | 1,425 Hz | 1,362 Hz | 1,331 Hz |
+| `[10500, 16500)` | 1,214 Hz | 1,451 Hz | 1,410 Hz |
+
+Cả hai block giữ đủ 20 điểm fit, ambiguity bằng 0, RMS dưới 20 Hz nên
+`selected_source=data`. RMS fit đo độ phù hợp polynomial với điểm DC của
+demo; RMSE với L1 là phép so sánh khác. Kết quả nằm trong `output/` và không
+được commit cùng code.
+
+### Input DCE dùng hiệu chỉnh tham chiếu L1
+
+Theo yêu cầu dùng các giá trị tính sẵn để chuẩn bị input đầy đủ hơn, chạy:
+
+```bash
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections
+```
+
+Kết quả được ghi riêng tại `output/sentinel-1/product_1_dce_l1_input/`,
+giữ nguyên kết quả demo cơ bản. Các tham số và phép biến đổi được lưu trong
+`doppler_centroid.json/input_corrections`:
+
+| Hiệu chỉnh | Nguồn / cách áp dụng |
+|---|---|
+| I/Q bias | L1 `rawDataAnalysis/support/*BiasUsedForCorrection`: trừ `0,2893930077552795 + j·0,3621337115764618` khỏi echo trước mọi gain correction. |
+| Receiver variation | Hệ số S4/RX V trong AUX_INS; DAD §9.2.3, time trend tính từ cuối TX pulse, overshoot tính từ `t_RX` sau suppressed samples; đơn vị µs, chia gain theo Eq. 9-16. |
+| PG drift tương đối | Hai replica PG valid trong L1; đổi annotation reciprocal thành correction rồi nội/ngoại suy complex theo DAD §9.4. Chuẩn hóa node đầu bằng 1, giữ thay đổi gain/phase theo thời gian. |
+| Range replica | Nominal amplitude/phase S4/VV từ AUX_INS (cập nhật 21/10/2026); L1 `referenceReplica/gain` và delay tham chiếu vẫn được giữ. Builder dùng whitening và normalization theo Parseval; coefficient L1 chỉ để đối chiếu độ làm tròn. Không thêm Hamming. |
+| Internal delay | L1 `referenceReplica/timeDelay=4,333092e-7 s`: advance output của matched filter để bù positive hardware delay; tone/chirp test kiểm tra chiều dịch. |
+| EAP | Bảy vector L1 `antennaPattern`, mỗi vector 574 giá trị complex theo thứ tự I/Q; nội suy theo range, căn magnitude giữ nguyên phase rồi nghịch đảo, sau đó nội suy correction theo thời gian (§9.5). |
+| Range spreading loss | Nhân amplitude `(R/800000 m)^(3/2)` theo DAD §9.6; reference range đọc từ annotation. |
+
+Định nghĩa PG và complex EAP đã đối chiếu với
+[Sentinel-1 Product Specification, Issue 3/9, Table 6-57 và 6-82](https://sentinels.copernicus.eu/documents/247904/1877131/Sentinel-1-Product-Specification-18052021.pdf).
+**Không nhân trực tiếp PG amplitude/phase trong annotation vào echo**: đó
+là biểu diễn reciprocal có kèm hệ số giữa swath. Chỉ phục hồi drift tương
+đối; chưa khôi phục absolute radiometric scale. Một hệ số complex hằng
+chung toàn scene không làm thay đổi pha lag-1 hay DCE.
+
+Bù internal delay cần mẫu tương lai tại mép xa: demo bỏ thêm **25 mẫu** mỗi
+chunk, nên ROI chung còn **18.145 mẫu**. Vẫn dùng 20 block × 1.000 mẫu nhưng
+phân bố lại trên ROI hợp lệ; Fine DC L1 được nội suy tới tâm block mới khi
+tính RMSE. Không giữ các mẫu thiếu chirp support chỉ để khớp layout L1.
+Bank EAP được kiểm tra range/time coverage, không âm thầm clamp ngoài biên.
+
+Kết quả audit ngày 20/10/2026 trên toàn bộ 16.500 echo (trước khi chuyển
+nominal coefficients sang AUX; xem [kiểm tra RRF ngày 21/10](docs/sentinel1_rrf_followup.md)):
+
+| Block | RMS fit | RMSE Fine DC/L1: cơ bản → hiệu chỉnh | RMSE polynomial/L1 sau hiệu chỉnh |
+|---|---|---|---|
+| 1 | 1,417 Hz | 1,362 → 1,372 Hz | 1,342 Hz |
+| 2 | 1,206 Hz | 1,451 → 1,495 Hz | 1,452 Hz |
+
+Cả hai block vẫn giữ 20 điểm fit và chọn data DC. Sai số với L1 **chưa giảm**;
+đây là báo cáo thực nghiệm, không chỉnh bias/phase để ép khớp. Hai chế độ
+có ROI khác 25 mẫu để bảo đảm support sau bù delay, nên Fine DC được so tại
+tâm range thực tế của từng chế độ.
+
+Không áp gain imbalance/quadrature vì cờ AUX tắt; không áp Hamming/AAP của
+hậu xử lý, không trừ thermal-noise power khỏi complex input và không thêm
+RFI mitigation khi annotation ghi `Never`. Geometry DC vẫn dùng ephemeris L0.
+
+**Giới hạn:** đây là input chẩn đoán có dùng L1, không phải kết quả L0/AUX
+độc lập. PG chỉ là relative drift,
+và RRF nominal này chưa chứng minh tái tạo đúng mọi chi tiết phổ
+`Extended Tapered` của IPF. Không gọi input là tương đương IPF chỉ vì có thêm
+hiệu chỉnh. Các thông số unwrap/outlier/weighting được giữ nguyên, không
+chỉnh theo RMSE để làm kết quả khớp L1.
+
 ## RADARSAT-1 Level-0
 
 Giải mã một cửa sổ CEOS thành I/Q `complex64`:
@@ -81,7 +253,9 @@ Trích xuất metadata CEOS leader thành JSON:
 - `workflows/radarsat-1/`: các lệnh xử lý và focus RADARSAT-1.
 - `src/`: thuật toán xử lý và tiện ích dùng lại.
 - `test/`: kiểm thử tự động.
-- `references/`: tài liệu và metadata tham chiếu.
+- `references/`: tài liệu thuật toán, hiện có DAD Sentinel-1.
+- `docs/`: workflow chi tiết để triển khai theo DAD.
+- `~/sar_data/focusing_data/`: bộ dữ liệu Sentinel-1 L0/L1/AUX, ngoài repo.
 - `data/`, `output/`, `.cache/`: dữ liệu vào, kết quả và cache cục bộ; không commit.
 
 ## Quy tắc khi sửa notebook
