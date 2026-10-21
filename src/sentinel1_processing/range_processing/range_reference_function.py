@@ -45,6 +45,7 @@ def create_freq_domain(
     pulse_ramp_rate_hz_per_s,
     pulse_length_s,
     fft_length,
+    internal_delay_s=0.0,
 ):
     """Create the frequency-domain Range Reference Function."""
     phi1 = (
@@ -56,6 +57,7 @@ def create_freq_domain(
         amplitude_coefficients=[1.0],
         phase_coefficients_cycles=[0.0, phi1, pulse_ramp_rate_hz_per_s / 2.0],
         fft_length=fft_length,
+        internal_delay_s=internal_delay_s,
     )
 
 __all__ = ["create_freq_domain", "from_coefficients"]

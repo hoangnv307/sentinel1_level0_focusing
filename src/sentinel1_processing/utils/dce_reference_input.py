@@ -142,11 +142,12 @@ class ReferenceInput:
         """Nội/ngoại suy correction complex, không nội suy phase đã wrap (§9.4)."""
         return _interpolate(self.pg_times, self.pg_corrections, np.asarray(acquisition_times_s) + self.time_offset_s)
 
-    def range_reference(self, sample_rate_hz, pulse_length_s, fft_length):
+    def range_reference(self, sample_rate_hz, pulse_length_s, fft_length, *, internal_delay_s=None):
         return from_coefficients(
             sample_rate_hz=sample_rate_hz, pulse_length_s=pulse_length_s, fft_length=fft_length,
             amplitude_coefficients=self.amplitude, phase_coefficients_cycles=self.phase,
-            internal_delay_s=self.internal_delay_s, complex_gain=self.replica_gain,
+            internal_delay_s=self.internal_delay_s if internal_delay_s is None else internal_delay_s,
+            complex_gain=self.replica_gain,
         )
 
     def range_gain_bank(self, tau):

@@ -171,6 +171,15 @@ class Sentinel1DceDemoTest(unittest.TestCase):
         )
         self.assertEqual(int(np.argmax(abs(compressed[0]))), 80)
 
+    def test_explicit_reference_delay_replaces_l1_delay_instead_of_adding_it(self):
+        correction = self.reference_input()
+        pulse = 128/self.rate
+        zero = correction.range_reference(self.rate, pulse, 1024, internal_delay_s=0.)
+        delay = 7.25/self.rate
+        actual = correction.range_reference(self.rate, pulse, 1024, internal_delay_s=delay)
+        expected = zero*np.exp(2j*np.pi*np.fft.fftfreq(1024, 1/self.rate)*delay)
+        np.testing.assert_allclose(actual, expected, atol=3e-7, rtol=3e-6)
+
     def test_rejects_invalid_pg_instead_of_using_its_values(self):
         correction = self.reference_input()
         flag = self.reference.find("generalAnnotation/replicaInformationList/replicaInformation/replicaList/replica/absolutePgProductValidFlag")

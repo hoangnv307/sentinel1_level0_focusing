@@ -19,6 +19,7 @@ from sentinel1_processing.common.raw_data_correction import apply as correct_raw
 from sentinel1_processing.common.receiver_gain_compensation import calculate_gain
 from sentinel1_processing.doppler_centroid import estimation, geometry
 from sentinel1_processing.range_processing.swst_bias import correct
+from sentinel1_processing.range_processing.range_reference_function import create_freq_domain
 from sentinel1_processing.utils.dce_reference_input import ReferenceInput
 from sentinel1_processing.utils.pg_calibration_input import analyze_calibration
 from sentinel1_processing.pre_processing.internal_calibration import interpolate_pg
@@ -174,10 +175,18 @@ def compress_echoes(
     predefined_gain_imbalance=None, predefined_quadrature_rad=None,
     correct_rx_variation=None,
     pg_correction_provider=None,
+    internal_delay_s=None, minimum_far_range_discard_samples=0,
 ):
     """Decode/compress theo batch vào memmap; không giữ toàn raw scene trong RAM."""
     if not isinstance(batch_lines, (int, np.integer)) or isinstance(batch_lines, bool) or batch_lines <= 0:
         raise ValueError("batch_lines phải là số nguyên dương.")
+    delay = (0. if reference_input is None else reference_input.internal_delay_s) if internal_delay_s is None else internal_delay_s
+    if (np.asarray(delay).ndim != 0 or np.asarray(delay).dtype.kind not in "fiu"
+            or not np.isfinite(delay) or delay < 0):
+        raise ValueError("internal_delay_s phải là scalar thực hữu hạn, không âm.")
+    if (not isinstance(minimum_far_range_discard_samples, (int, np.integer))
+            or isinstance(minimum_far_range_discard_samples, bool) or minimum_far_range_discard_samples < 0):
+        raise ValueError("minimum_far_range_discard_samples phải là số nguyên không âm.")
     chunks = []
     for chunk in level0.acquisition_chunks:
         metadata = level0.get_acquisition_chunk_metadata(chunk)
@@ -242,14 +251,17 @@ def compress_echoes(
     for (chunk, metadata), origin in zip(chunks, origins):
         n_range = 2 * int(metadata["Number of Quads"].iloc[0])
         n_valid = n_range - pulse_samples
-        # Advance do hardware delay cần mẫu tương lai; bỏ mép xa thiếu full chirp support.
-        far_throwaway = 0 if reference_input is None else int(np.ceil(reference_input.internal_delay_s * sample_rate))
-        stop_sample = n_valid - far_throwaway
-        if stop_sample < 2:
-            raise ValueError(f"Chunk {chunk} không đủ range support sau compression.")
         tau = correct(origin + np.arange(n_range) / sample_rate, aux["swst_bias_s"])
         offset = (origin - min(origins)) * sample_rate
         shift = (round(offset) - offset) / sample_rate
+        # Both phase ramps advance data; reserve their combined future-sample support.
+        advance_samples = (delay + shift) * sample_rate
+        # SWST subtraction can leave ~1e-11 sample at an exact integer boundary.
+        required_far_discard = max(0, int(np.ceil(advance_samples - 1e-8)))
+        far_throwaway = max(required_far_discard, minimum_far_range_discard_samples)
+        stop_sample = n_valid - far_throwaway
+        if stop_sample < 2:
+            raise ValueError(f"Chunk {chunk} không đủ range support sau compression.")
         eta = metadata["Coarse Time"].to_numpy(float) + metadata["Fine Time"].to_numpy(float)
         if not np.allclose(np.diff(eta), pri, rtol=0, atol=0.05 * pri):
             raise ValueError(f"Chunk {chunk}: timeline có gap hoặc PRI không đều.")
@@ -264,11 +276,20 @@ def compress_echoes(
             gain_trend_coefficients=aux.get("rx_gain_trend"),
             gain_overshoot_coefficients=aux.get("rx_gain_overshoot"), enabled=rx_enabled,
         )
-        reference = bank = None
+        fft_length = 1 << (n_range + pulse_samples - 2).bit_length()
+        bank = None
         if reference_input is not None:
-            fft_length = 1 << (n_range + pulse_samples - 2).bit_length()
-            reference = reference_input.range_reference(sample_rate, float(first["Tx Pulse Length"]), fft_length)
+            if internal_delay_s is None:
+                reference = reference_input.range_reference(sample_rate, float(first["Tx Pulse Length"]), fft_length)
+            else:
+                reference = reference_input.range_reference(sample_rate, float(first["Tx Pulse Length"]), fft_length,
+                                                            internal_delay_s=delay)
             bank = reference_input.range_gain_bank(tau[:stop_sample] + shift)
+        else:
+            reference = create_freq_domain(sample_rate_hz=sample_rate,
+                pulse_start_frequency_hz=float(first["Tx Pulse Start Frequency"]),
+                pulse_ramp_rate_hz_per_s=float(first["Tx Ramp Rate"]),
+                pulse_length_s=float(first["Tx Pulse Length"]), fft_length=fft_length, internal_delay_s=delay)
         print(f"Chunk {chunk}: {len(metadata)} echo × {n_range} mẫu, I/Q bias={bias}", flush=True)
         for start in range(0, len(metadata), batch_lines):
             stop = min(start + batch_lines, len(metadata))
@@ -307,6 +328,8 @@ def compress_echoes(
         diagnostics.append({
             "chunk": int(chunk), "shape": list(segments[-1].range_compressed.shape),
             "hardware_delay_far_throwaway_samples": far_throwaway,
+            "internal_delay_s": float(delay), "required_far_range_discard_samples": required_far_discard,
+            "minimum_far_range_discard_samples": int(minimum_far_range_discard_samples),
             "iq_bias": [bias.real, bias.imag],
             "iq_bias_source": bias_source if flags["correct_iq_bias"] else "disabled",
             "iq_analysis_lines": raw_analysis["line_count"] if raw_analysis is not None else 0,
@@ -470,6 +493,10 @@ def main():
                         help="Dựng PG drift tương đối từ calibration L0/AUX; chế độ nghiên cứu, chưa phục hồi absolute scale.")
     parser.add_argument("--pg-oversampling-factor", type=int, default=16)
     parser.add_argument("--pg-denominator-relative-floor", type=float, default=0.)
+    parser.add_argument("--internal-delay-source", choices=("l0", "l1", "none"), default="l0",
+                        help="Mặc định đo delay từ PG L0/AUX; l1 chỉ cùng --l1-input-corrections; none để đối chứng.")
+    parser.add_argument("--minimum-far-range-discard-samples", type=int, default=0,
+                        help="Cắt tối thiểu mép xa để đối chứng cùng ROI; không giảm guard bắt buộc theo delay.")
     parser.add_argument("--l0-raw-analysis", action="store_true",
                         help="Thay bias L1 bằng raw analysis L0 khi dùng --l1-input-corrections.")
     parser.add_argument(
@@ -477,6 +504,8 @@ def main():
         help="Dùng I/Q bias, replica, PG và EAP từ L1 để chuẩn bị input DCE chẩn đoán.",
     )
     args = parser.parse_args()
+    if args.internal_delay_source == "l1" and not args.l1_input_corrections:
+        parser.error("--internal-delay-source l1 cần --l1-input-corrections.")
     product = args.product.expanduser().resolve()
     raw = one(product.glob("level-0/s1a-s4-raw-s-vv-*.dat"), "raw S4/VV")
     annotation_path = one(product.glob("level-1/s1a-s4-slc-vv-*.xml"), "annotation S4/VV")
@@ -489,14 +518,19 @@ def main():
             suffix += "_l0_raw_analysis"
         if args.l0_pg_drift:
             suffix += "_l0_pg_drift"
+        suffix += f"_delay_{args.internal_delay_source}"
         args.output = Path(f"output/sentinel-1/product_1_dce{suffix}")
     level0 = sentinel1decoder.Level0File(str(raw))
-    pg_report = pg_provider = None
-    if args.l0_pg_drift:
-        pg_times, pg_values, pg_report = analyze_calibration(
+    calibration_report = pg_report = pg_provider = None
+    if args.l0_pg_drift or args.internal_delay_source == "l0":
+        pg_times, pg_values, calibration_report = analyze_calibration(
             level0, product, oversampling_factor=args.pg_oversampling_factor,
             denominator_relative_floor=args.pg_denominator_relative_floor)
+    if args.l0_pg_drift:
+        pg_report = calibration_report
         pg_provider = lambda query: interpolate_pg(pg_times, pg_values, query)
+    internal_delay_s = (calibration_report["internal_delay"]["mean_s"] if args.internal_delay_source == "l0" else
+                        reference_input.internal_delay_s if args.internal_delay_source == "l1" else 0.)
     raw_analysis = analyze_echoes(
         level0, batch_lines=args.batch_lines, azimuth_start_line=args.analysis_start_line,
         azimuth_step=args.analysis_step, max_azimuth_lines=args.analysis_lines,
@@ -514,6 +548,8 @@ def main():
             **correction_inputs,
             correct_rx_variation=args.correct_rx_variation,
             pg_correction_provider=pg_provider,
+            internal_delay_s=internal_delay_s,
+            minimum_far_range_discard_samples=args.minimum_far_range_discard_samples,
         )
         corrected_analysis = analyze_echoes(
             level0, **raw_analysis["selection"], iq_correction=diagnostics[0]["raw_correction_parameters"],
@@ -545,11 +581,18 @@ def main():
             "iq_correction_overrides": correction_inputs,
             "receiver_compensation_override": args.correct_rx_variation,
             "l0_pg_calibration": pg_report,
+            "internal_delay_compensation": {"source": args.internal_delay_source, "applied_s": internal_delay_s,
+                "l0_estimate": None if calibration_report is None else calibration_report["internal_delay"],
+                "l1_reference_s": None if reference_input is None else reference_input.internal_delay_s,
+                "minimum_far_range_discard_samples": args.minimum_far_range_discard_samples},
             "input_corrections": {**(reference_input.summary() if reference_input else {"source": "L0 raw analysis + nominal chirp từ header + receiver compensation L0/AUX"}),
                                   "rx_variation_applied": diagnostics[0]["receiver_compensation"]["enabled"],
                                   "rx_variation_flag_source": diagnostics[0]["receiver_compensation"]["flag_source"],
                                   "pg_correction_source": f"L0/AUX PG (relative, {pg_report['quality']['source']})" if pg_report is not None else (
                                       "L1 inverse-PG annotation" if reference_input is not None else "none"),
+                                  "internal_delay_compensation_s": internal_delay_s,
+                                  "internal_delay_source": args.internal_delay_source,
+                                  "internal_delay_reference_l1_s": None if reference_input is None else reference_input.internal_delay_s,
                                   "iq_bias_reference_l1": None if reference_input is None else [reference_input.bias.real, reference_input.bias.imag],
                                   "iq_bias": diagnostics[0]["iq_bias"],
                                   "iq_bias_actually_applied": diagnostics[0]["iq_bias"],

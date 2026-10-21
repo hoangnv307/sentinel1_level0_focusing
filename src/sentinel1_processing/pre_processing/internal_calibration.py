@@ -134,6 +134,20 @@ def validate_pg(
             "source": "model" if fallback else "extracted", "selected": selected.tolist()}, model if fallback else products
 
 
+def mean_internal_delay(peak_lags_samples, *, sample_rate_hz, delta_t_guard1_s, delta_t_suppr_s, valid):
+    """DAD Eq. 4-34: mean delay of valid correlation peaks, independent of PG QC."""
+    lags, mask = np.asarray(peak_lags_samples), np.asarray(valid)
+    if (lags.ndim != 1 or lags.dtype.kind not in "fiu" or mask.shape != lags.shape
+            or mask.dtype.kind != "b" or not mask.any() or not np.isfinite(lags[mask]).all()
+            or not _nonnegative_real(sample_rate_hz) or sample_rate_hz == 0
+            or not _nonnegative_real(delta_t_guard1_s) or not _nonnegative_real(delta_t_suppr_s)):
+        raise ValueError("Delay cần peak valid hữu hạn, mask bool, sample rate dương và guard/suppression hợp lệ.")
+    delay = np.mean(lags[mask]/sample_rate_hz - (delta_t_guard1_s-delta_t_suppr_s))
+    if not np.isfinite(delay):
+        raise ValueError("Internal delay trung bình không hữu hạn.")
+    return float(delay)
+
+
 def interpolate_pg(times_s, corrections, query_times_s):
     """Eq. 9-17: interpolate/extrapolate complex values, never wrapped phase."""
     times = np.asarray(times_s)
@@ -150,4 +164,4 @@ def interpolate_pg(times_s, corrections, query_times_s):
     return result
 
 
-__all__ = ["extract_pulse", "reconstruct_replica", "correlation_peak", "nominal_pg_replica", "pg_products", "validate_pg", "interpolate_pg"]
+__all__ = ["extract_pulse", "reconstruct_replica", "correlation_peak", "nominal_pg_replica", "pg_products", "validate_pg", "mean_internal_delay", "interpolate_pg"]

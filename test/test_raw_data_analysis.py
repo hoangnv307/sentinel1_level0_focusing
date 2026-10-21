@@ -381,6 +381,44 @@ class RawDataSelectionTest(unittest.TestCase):
                         demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis,
                                              pg_correction_provider=invalid)
 
+    def test_delay_advance_and_common_roi_match_independent_linear_convolution(self):
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
+        fs = sentinel1decoder.utilities.range_dec_to_sample_rate(RangeDecimation.RGDEC_5)
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            for delay_samples, minimum in ((0, 2), (1, 0), (1, 2)):
+                segments, _, _, diagnostics = demo.compress_echoes(
+                    self.level0, aux, tmp, batch_lines=3, internal_delay_s=delay_samples/fs,
+                    minimum_far_range_discard_samples=minimum)
+                discard = max(delay_samples, minimum)
+                expected = np.array([np.convolve(row, np.ones(2)/np.sqrt(2))[
+                    1+delay_samples:1+delay_samples+6-discard] for row in self.raw])
+                actual = np.concatenate([s.range_compressed for s in segments])
+                np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=3e-6)
+                self.assertEqual([d["hardware_delay_far_throwaway_samples"] for d in diagnostics], [discard]*2)
+
+    def test_invalid_or_unsupported_delay_guard_fails_before_compression(self):
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
+        for override in ({"internal_delay_s": -1.}, {"internal_delay_s": np.nan},
+                         {"internal_delay_s": [0.]}, {"minimum_far_range_discard_samples": -1},
+                         {"minimum_far_range_discard_samples": 1.5}, {"minimum_far_range_discard_samples": 5}):
+            with self.subTest(override=override), TemporaryDirectory() as tmp:
+                with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), \
+                        patch.object(demo.compression, "compress", side_effect=AssertionError("Không được tới FFT")):
+                    message = "range support" if override.get("minimum_far_range_discard_samples") == 5 else "phải là"
+                    with self.assertRaisesRegex(ValueError, message):
+                        demo.compress_echoes(self.level0, aux, tmp, **override)
+
+    def test_far_guard_accounts_for_fractional_alignment_as_well_as_delay(self):
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
+        fs = sentinel1decoder.utilities.range_dec_to_sample_rate(RangeDecimation.RGDEC_5)
+        self.frames[14]["SWST"] = .6/fs  # round(.6)-.6 = +.4 sample advance.
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            _, _, _, diagnostics = demo.compress_echoes(self.level0, aux, tmp, internal_delay_s=1.8/fs)
+        self.assertEqual([d["hardware_delay_far_throwaway_samples"] for d in diagnostics], [2, 3])
+
 
 PRODUCT_RAW = Path.home()/"sar_data/focusing_data/product_1/level-0/s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat"
 

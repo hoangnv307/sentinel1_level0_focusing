@@ -18,6 +18,23 @@ class InternalCalibrationTest(unittest.TestCase):
         self.qc = dict(pg_amp_std_fraction=1., pg_phase_std_fraction=100., max_pg_amp_error=100.,
                        max_pg_phase_error=6.28, invalid_pg_max_fraction=.5, use_model=False)
 
+    def test_internal_delay_averages_valid_peaks_with_configurable_guard_and_suppression(self):
+        actual = cal.mean_internal_delay([12.25, np.nan, 14.75], sample_rate_hz=100.,
+                                         delta_t_guard1_s=.04, delta_t_suppr_s=.01,
+                                         valid=[True, False, True])
+        self.assertAlmostEqual(actual, .105)
+        self.assertAlmostEqual(cal.mean_internal_delay([12.25], sample_rate_hz=100.,
+            delta_t_guard1_s=.04, delta_t_suppr_s=.01, valid=[True]), .0925)
+
+    def test_internal_delay_rejects_missing_peaks_invalid_masks_and_configuration(self):
+        config = dict(sample_rate_hz=100., delta_t_guard1_s=.04, delta_t_suppr_s=.01, valid=[True, True])
+        for override in ({"valid": [False, False]}, {"valid": [1, 1]}, {"valid": [True]},
+                         {"sample_rate_hz": 0.}, {"delta_t_guard1_s": np.nan}, {"delta_t_suppr_s": -1.}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                cal.mean_internal_delay([12., 14.], **{**config, **override})
+        with self.assertRaises(ValueError):
+            cal.mean_internal_delay([np.nan, 14.], **config)
+
     def test_pcc_cancels_leakage_and_honors_one_based_order_and_sign(self):
         leakage = 3+2j
         pulses = np.array([self.signal+leakage, -self.signal+leakage])
@@ -247,7 +264,7 @@ class RealCalibrationTest(unittest.TestCase):
         # Independent commanded chirp; no calibration or L1 amplitude is fitted.
         nominal = np.exp(2j*np.pi*(float(header["Tx Pulse Start Frequency"])*time +
                                    .5*float(header["Tx Ramp Rate"])*time**2))/count
-        independent_peaks = []
+        independent_peaks, independent_lags = [], []
         for replica in replicas:
             spectrum = np.fft.fft(replica)*np.fft.fft(nominal, n=len(replica)).conj()
             frequencies = np.fft.fftfreq(len(spectrum))
@@ -258,6 +275,7 @@ class RealCalibrationTest(unittest.TestCase):
             peaks = np.array([(np.sum(spectrum*np.exp(2j*np.pi*frequencies*lag)) +
                                nyquist*np.cos(np.pi*lag))/len(spectrum) for lag in candidates])
             independent_peaks.append(peaks[np.argmax(abs(peaks))])
+            independent_lags.append(candidates[np.argmax(abs(peaks))])
         peak_first, peak = independent_peaks
         oracle = peak_first/peak
         np.testing.assert_allclose(correction, [1., oracle], rtol=2e-5)
@@ -272,6 +290,12 @@ class RealCalibrationTest(unittest.TestCase):
         self.assertTrue(report["echo_coverage_without_extrapolation"])
         for node in report["nodes"]:
             self.assertTrue(4e-7 < node["internal_delay_diagnostic_s"] < 5e-7)
+        self.assertAlmostEqual(report["internal_delay"]["mean_s"],
+                               np.mean([n["internal_delay_diagnostic_s"] for n in report["nodes"]]), places=16)
+        self.assertEqual(report["internal_delay"]["valid_sequence_indices"], [0, 1])
+        independent_delay = np.mean(independent_lags)/rate - (
+            report["configuration"]["delta_t_guard1_s"]-report["configuration"]["delta_t_suppr_s"])
+        self.assertLess(abs(report["internal_delay"]["mean_s"]-independent_delay), 1e-12)
         self.assertLess(times[0], times[1])
 
 

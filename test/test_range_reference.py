@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from scipy.fft import fft, fftfreq, ifft
 
-from sentinel1_processing.range_processing.range_reference_function import from_coefficients
+from sentinel1_processing.range_processing.range_reference_function import from_coefficients, create_freq_domain
 from sentinel1_processing.azimuth_pre_processing.range.compression import compress
 
 
@@ -60,6 +60,28 @@ class RangeReferenceTest(unittest.TestCase):
                        {"complex_gain": 0j}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.make(**change)
+
+    def test_header_rrf_removes_known_integer_and_fractional_forward_delay(self):
+        fs, n, size, length = 128., 64, 256, 512
+        f0, ramp = -24., 96.
+        time = (np.arange(n)-(n-1)/2)/fs
+        chirp = np.exp(2j*np.pi*((f0+ramp*n/(2*fs))*time+.5*ramp*time**2))
+        transmitted = np.zeros(length, complex)
+        transmitted[60:60+n] = chirp
+        expected = np.convolve(transmitted[:size], chirp[::-1].conj()/np.sqrt(n))[n-1:size-1]
+        for delay_samples in (7., 7.25, 7.8):
+            # Independent forward instrument: negative ramp delays the acquired chirp.
+            raw = ifft(fft(transmitted)*np.exp(-2j*np.pi*fftfreq(length)*delay_samples))[:size]
+            reference = create_freq_domain(sample_rate_hz=fs, pulse_length_s=n/fs,
+                pulse_start_frequency_hz=f0, pulse_ramp_rate_hz_per_s=ramp,
+                fft_length=length, internal_delay_s=delay_samples/fs)
+            result, axis = compress(raw[None, :], np.arange(size)/fs, sample_rate_hz=fs,
+                pulse_length_s=n/fs, pulse_start_frequency_hz=f0, pulse_ramp_rate_hz_per_s=ramp,
+                range_reference_function=reference, output="slc")
+            self.assertEqual(int(np.argmax(abs(result[0]))), 60)
+            # Finite acquisition truncates fractional-shift sinc tails outside the window.
+            np.testing.assert_allclose(result[0, 20:150], expected[20:150], atol=2e-5, rtol=0)
+            np.testing.assert_array_equal(axis, np.arange(size-n)/fs)
 
 
 if __name__ == "__main__":

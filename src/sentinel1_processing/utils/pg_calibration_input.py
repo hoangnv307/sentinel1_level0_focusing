@@ -7,7 +7,7 @@ import numpy as np
 import sentinel1decoder
 
 from ..pre_processing.internal_calibration import (
-    extract_pulse, reconstruct_replica, nominal_pg_replica, pg_products, validate_pg,
+    extract_pulse, reconstruct_replica, nominal_pg_replica, pg_products, validate_pg, mean_internal_delay,
 )
 
 
@@ -187,7 +187,20 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
                     nominal_peak_lag_samples=float(lag),
                     internal_delay_diagnostic_s=float(lag)/node["sample_rate_hz"] - (
                         configuration["delta_t_guard1_s"]-configuration["delta_t_suppr_s"]))
+    delay_valid = [n["reconstructed_replica_valid"] for n in nodes]
+    delay = mean_internal_delay(lags, sample_rate_hz=rate,
+                                delta_t_guard1_s=configuration["delta_t_guard1_s"],
+                                delta_t_suppr_s=configuration["delta_t_suppr_s"], valid=delay_valid)
     report = {"raw_file": str(level0.filename), "configuration": configuration, "inventory": inventory,
+              "internal_delay": {"mean_s": delay, "source": "L0 PG correlation + AUX_INS guard/suppression (DAD 4-34)",
+                                 "valid_sequence_indices": np.flatnonzero(delay_valid).tolist(),
+                                 "per_sequence_delay_s": [n["internal_delay_diagnostic_s"] for n in nodes],
+                                 "sample_rate_hz": rate, "peak_lags_samples": lags.tolist(),
+                                 "delta_t_guard1_s": configuration["delta_t_guard1_s"],
+                                 "delta_t_suppr_s": configuration["delta_t_suppr_s"],
+                                 "oversampling_factor": oversampling_factor,
+                                 "denominator_relative_floor": denominator_relative_floor,
+                                 "selection": "valid reconstructed correlation peaks; independent of PG amplitude/phase QC"},
               "nodes": nodes, "quality": quality, "image_rx_mean_powers": image_rx_powers,
               "selected_times_gps_s": np.array(node_times)[selected].tolist(),
               "relative_corrections": np.column_stack((relative.real, relative.imag)).tolist(),
