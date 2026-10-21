@@ -6,6 +6,11 @@ Receiver compensation nay hoạt động trong default DCE, dùng timing L0,
 hệ số AUX_INS và cờ AUX_PP1; không cần cờ hoặc gain từ annotation L1.
 Layout của demo DCE vẫn giữ ngoại lệ suy từ L1 đã được người dùng cho phép.
 
+Bước tiếp theo đã có [PG drift tương đối từ calibration L0/AUX](sentinel1_pg_calibration.md),
+opt-in qua `--l0-pg-drift`. Các lượt reference trong tài liệu RX này có
+trước khi sửa chiều PG reference; giữ số liệu lịch sử, đối chứng mới ở
+báo cáo PG. Công thức receiver sqrt(GV) và các test riêng vẫn giữ nguyên.
+
 ## 1. Công thức đã kiểm tra trực tiếp trên PDF
 
 Nguồn: DAD Issue/Revision 2/5, **PDF trang 126–127**, trang in **9-9–9-10**,

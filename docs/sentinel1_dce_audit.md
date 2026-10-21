@@ -7,6 +7,9 @@ Cập nhật bước RRF ngày 21/10/2026 nằm trong
 cho GV thay vì **sqrt(GV)** của Eq. 9-16 (dấu căn bị mất khi trích text).
 Xem [triển khai và kết quả RX đã sửa](sentinel1_receiver_gain_compensation.md).
 Các số RMSE lịch sử bên dưới không đại diện cho công thức RX hiện tại.
+Đính chính tiếp theo: nhánh PG reference cũ cũng đã nghịch đảo thêm một
+lần giá trị inverse-PG trong annotation. Nay chuẩn hóa trực tiếp; xem
+[PG L0/AUX và đối chứng cùng layout](sentinel1_pg_calibration.md).
 Phạm vi là đường xử lý **L0 → input range-compressed → Doppler centroid**
 của demo S4/VV. Các tham số dùng sau DCE được phân loại để tránh đưa nhầm
 vào estimator; báo cáo này không xác nhận chất lượng ảnh SLC sau focus.
@@ -85,7 +88,7 @@ workflow và DAD §5, §6.1–6.2, §9.2–9.6.
 | RX correction range | Gain 0,943959–1,026669 ở chunk 13; 0,944980–1,026922 ở chunk 14 | Không thấy mẫu số 0, gain không dương hoặc non-finite |
 | Replica amplitude / phase | `[1,0,0,0]`; phase cycles `[0,-800.9333,4.914177e11,0]` | L1 reference replica; AUX nominal có thêm chữ số. Không so hai chirp khác gốc thời gian bằng trực tiếp coefficient |
 | Internal delay | `4.333092e-7 s`, khoảng 24,40 mẫu | Advance bằng phase ramp dương; bỏ thêm `ceil(delay×Fr)=25` mẫu mép xa |
-| PG | Hai node valid; nội/ngoại suy correction complex, không unwrap/interpolate phase riêng | Annotation là reciprocal PG có gain normalization; dùng p0/p(t) để phục hồi drift tương đối |
+| PG | Hai node valid; nội/ngoại suy correction complex | Lượt cũ dùng p0/p(t) là sai chiều; annotation đã inverse PG, nay dùng value(t)/value(first) |
 | PG phase drift | Equivalent endpoint phase rate `-0.000683759 Hz` | Nhỏ hơn residual Fine DC cỡ Hz; không đủ để giải thích residual chỉ bằng drift tuyến tính này |
 | PG validity / coverage | Hai node hợp lệ; scene start không cần ngoại suy | Loại node có flag invalid; chưa phục hồi absolute radiometry |
 | EAP | 7 node thời gian, mỗi node 574 mẫu complex | Đọc cặp re/im; nội suy complex LUT theo range rồi dùng `sqrt(abs(z))/z` |

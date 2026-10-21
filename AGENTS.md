@@ -50,6 +50,18 @@ cho Sentinel-1.
   Kết quả reference/audit/RRF trước sửa lỗi dùng nhầm mẫu số; giữ lịch sử
   nhưng phải xem [báo cáo RX mới](docs/sentinel1_receiver_gain_compensation.md).
   CLI `--no-correct-rx-variation` cho ablation, không đổi mặc định theo RMSE.
+- PG calibration L0 đã có [kiểm kê, công thức, API và đối chứng](docs/sentinel1_pg_calibration.md).
+  `pre_processing/internal_calibration.py` là core; `utils/pg_calibration_input.py`
+  chọn pulse theo AUX; `analyze_calibration.py` xuất JSON/PNG. Có 800 cal
+  packet, PG ở chunk 7–12/15–20, image ở 1–6/21–26; Signal Type 11 là
+  TA cho S1A/B, 15 là TXH isolation. PG RGDEC0 có Fs=112,60416672 MHz,
+  không dùng 100 MHz bandwidth làm sample rate. Pulse order AUX là 1-based.
+  `--l0-pg-drift` áp PG tương đối từ L0/AUX (opt-in); absolute FFT/DN/model
+  normalization chưa xác minh, JSON `absolute_scale_verified=false`.
+  Node PG dùng acquisition time, không lấy timestamp L1 làm input.
+  **PG annotation đã là inverse instrument response**; reference chuẩn hóa
+  `value(t)/value(first)`, không nghịch đảo thêm lần nữa. Các report reference
+  trước sửa chiều PG là lịch sử; test phải dùng đáp ứng thiết bị biết trước.
 - `references/` chứa **tài liệu tham khảo thuật toán**. Tại lần khảo sát
   20/10/2026, thư mục chỉ có
   `ESA2022_Sentinel-1 Level 1 Detailed Algorithm Definition_bookmarked.pdf`:
@@ -152,6 +164,9 @@ với L1. Không chuyển ngoại lệ sang pipeline focus chính. README/JSON g
 nguồn, giả định, support và kết quả riêng của từng chế độ.
 Thêm `--l0-raw-analysis` để thay riêng bias L1 bằng bias L0 trong chế độ
 tham chiếu; JSON phải ghi rõ giá trị reference và giá trị thực sự áp dụng.
+`--l0-pg-drift` thay PG L1 bằng provider từ calibration L0/AUX, không nhân
+cả hai. Chế độ này vẫn dùng RRF gain/delay và EAP L1 khi kết hợp reference;
+chỉ default + flag PG là input correction không lấy các giá trị đó từ L1.
 
 ### (3) `auxiliary/` — cấu hình và đặc tính hệ thống
 
@@ -227,6 +242,8 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
 - `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
 - `src/sentinel1_processing/` — pure processing package:
   - `pre_processing/downlink_header_validation/` — kiểm tra header downlink theo DAD §4.3.
+  - `pre_processing/internal_calibration.py` — PCC/Average, replica FFT,
+    fractional complex correlation peak, PG/QC/model fallback và interpolation.
   - `common/raw_data_correction.py` — bias/gain/quadrature theo DAD §9.2.1;
     `estimate_iq_bias` giữ tương thích notebook S6, `apply` là operator chung.
   - `common/raw_data_analysis.py` — thống kê streaming §4.1 và chọn tham số
@@ -300,12 +317,13 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy receiver correction ngày 21/10/2026: 100 test, 94 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy PG calibration ngày 21/10/2026: 118 test, 112 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
   16 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  23 test `test/test_raw_data_analysis.py`, 10 test receiver compensation và 10 test
+  24 test `test/test_raw_data_analysis.py`, 17 test internal calibration,
+  10 test receiver compensation và 10 test
   `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.
 - New pure-processing functions should get a `test_*` unittest; keep `np.testing.assert_*` for array comparisons.

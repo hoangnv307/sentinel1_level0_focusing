@@ -8,6 +8,8 @@ Bước tiếp theo đã tích hợp [receiver compensation L0/AUX](sentinel1_re
 Các bảng DCE lịch sử ở đây có trước thay đổi đó; default cũ chưa RX có
 thể tái lập bằng `--no-correct-rx-variation`. Nhánh tham chiếu cũ chia nhầm
 GV; công thức hiện tại chia sqrt(GV) theo Eq. 9-16.
+Nhánh tham chiếu PG cũ cũng đã sửa về chuẩn hóa inverse-PG trực tiếp;
+xem [kiểm kê và PG drift L0/AUX](sentinel1_pg_calibration.md).
 
 ## Luồng và phạm vi
 

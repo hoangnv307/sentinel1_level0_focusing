@@ -9,6 +9,9 @@ nhận một giả thuyết là thuật toán IPF.
 trước khi sửa mẫu số RX từ GV sang **sqrt(GV)** theo Eq. 9-16. Giữ số
 liệu lịch sử, xem [báo cáo RX](sentinel1_receiver_gain_compensation.md) cho
 luồng hiện tại. Các test RRF về energy/support vẫn độc lập với lỗi scale RX.
+Các lượt này cũng có trước khi sửa chiều PG reference; xem
+[PG calibration L0/AUX](sentinel1_pg_calibration.md). Không dùng RMSE cũ
+để kết luận parity của RRF trong pipeline hiện tại.
 
 ## 1. Những gì đã xác định từ tài liệu
 

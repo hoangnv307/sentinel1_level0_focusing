@@ -160,6 +160,11 @@ Receiver gain compensation §9.2.3 hiện chạy độc lập từ L0/AUX theo
 `GV=10^((trend_dB+overshoot_dB)/10)` là power gain. Nhánh tham chiếu cũ
 đã chia nhầm cho GV vì text extraction mất dấu căn; số liệu cũ có RX cần
 đọc cùng [báo cáo sửa receiver compensation](docs/sentinel1_receiver_gain_compensation.md).
+Đã có [kiểm kê calibration và PG drift từ L0/AUX](docs/sentinel1_pg_calibration.md):
+800 calibration packet, hai PG sequence bao echo, API PCC/replica/QC và
+đối chứng cùng layout DCE. Dùng `--l0-pg-drift` để áp drift **tương đối**;
+chưa xác nhận absolute PG/model units nên giữ chế độ opt-in. Kiểm kê riêng:
+`python workflows/sentinel-1/analyze_calibration.py` với `MPLBACKEND=Agg`.
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.
 
@@ -191,7 +196,7 @@ giữ nguyên kết quả demo cơ bản. Các tham số và phép biến đổi
 |---|---|
 | I/Q bias | L1 `rawDataAnalysis/support/*BiasUsedForCorrection`: trừ `0,2893930077552795 + j·0,3621337115764618` khỏi echo trước mọi gain correction. |
 | Receiver variation | Hệ số S4/RX V trong AUX_INS, cờ từ AUX_PP1; DAD §9.2.3, trend tính từ cuối TX pulse, overshoot từ `t_RX` sau suppressed samples; đơn vị µs, chia `sqrt(GV)` theo Eq. 9-16. |
-| PG drift tương đối | Hai replica PG valid trong L1; đổi annotation reciprocal thành correction rồi nội/ngoại suy complex theo DAD §9.4. Chuẩn hóa node đầu bằng 1, giữ thay đổi gain/phase theo thời gian. |
+| PG drift tương đối | Hai node inverse-PG trong L1 đã mang chiều correction; chuẩn hóa trực tiếp `value(t)/value(first)` rồi nội/ngoại suy complex §9.4. `--l0-pg-drift` thay node L1 bằng kết quả calibration L0/AUX. |
 | Range replica | Nominal amplitude/phase S4/VV từ AUX_INS (cập nhật 21/10/2026); L1 `referenceReplica/gain` và delay tham chiếu vẫn được giữ. Builder dùng whitening và normalization theo Parseval; coefficient L1 chỉ để đối chiếu độ làm tròn. Không thêm Hamming. |
 | Internal delay | L1 `referenceReplica/timeDelay=4,333092e-7 s`: advance output của matched filter để bù positive hardware delay; tone/chirp test kiểm tra chiều dịch. |
 | EAP | Bảy vector L1 `antennaPattern`, mỗi vector 574 giá trị complex theo thứ tự I/Q; nội suy theo range, căn magnitude giữ nguyên phase rồi nghịch đảo, sau đó nội suy correction theo thời gian (§9.5). |
@@ -199,9 +204,10 @@ giữ nguyên kết quả demo cơ bản. Các tham số và phép biến đổi
 
 Định nghĩa PG và complex EAP đã đối chiếu với
 [Sentinel-1 Product Specification, Issue 3/9, Table 6-57 và 6-82](https://sentinels.copernicus.eu/documents/247904/1877131/Sentinel-1-Product-Specification-18052021.pdf).
-**Không nhân trực tiếp PG amplitude/phase trong annotation vào echo**: đó
-là biểu diễn reciprocal có kèm hệ số giữa swath. Chỉ phục hồi drift tương
-đối; chưa khôi phục absolute radiometric scale. Một hệ số complex hằng
+Annotation đã biểu diễn inverse instrument PG cùng hệ số giữa swath;
+nhánh tham chiếu nay chuẩn hóa trực tiếp, sửa lỗi nghịch đảo thêm một lần.
+Xem [đối chiếu Product Specification và L0](docs/sentinel1_pg_calibration.md).
+Chỉ phục hồi drift tương đối; chưa khôi phục absolute radiometric scale. Một hệ số complex hằng
 chung toàn scene không làm thay đổi pha lag-1 hay DCE.
 
 Bù internal delay cần mẫu tương lai tại mép xa: demo bỏ thêm **25 mẫu** mỗi
@@ -213,8 +219,8 @@ Bank EAP được kiểm tra range/time coverage, không âm thầm clamp ngoài
 Kết quả audit ngày 20/10/2026 trên toàn bộ 16.500 echo (trước khi chuyển
 nominal coefficients sang AUX; xem [kiểm tra RRF ngày 21/10](docs/sentinel1_rrf_followup.md)):
 
-Đây là số liệu lịch sử trước khi sửa mẫu số RX từ GV sang sqrt(GV);
-xem [kết quả RX hiện tại](docs/sentinel1_receiver_gain_compensation.md).
+Đây là số liệu lịch sử trước khi sửa mẫu số RX và chiều PG;
+xem [kết quả PG hiện tại](docs/sentinel1_pg_calibration.md).
 
 | Block | RMS fit | RMSE Fine DC/L1: cơ bản → hiệu chỉnh | RMSE polynomial/L1 sau hiệu chỉnh |
 |---|---|---|---|

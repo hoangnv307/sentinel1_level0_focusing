@@ -8,6 +8,8 @@ variation, PG, range compression và DCE.
 Cập nhật tiếp theo: [receiver compensation §9.2.3](sentinel1_receiver_gain_compensation.md)
 đã được đưa vào default L0/AUX. Các bảng DCE trong tài liệu này là lượt
 raw-I/Q trước khi bật RX mặc định; có thể tái chạy bằng cờ tắt RX.
+Đã bổ sung [PG drift L0/AUX](sentinel1_pg_calibration.md) qua cờ opt-in;
+baseline I/Q trong bảng dưới chưa bật cờ này.
 
 ## Công thức, dấu và đơn vị
 

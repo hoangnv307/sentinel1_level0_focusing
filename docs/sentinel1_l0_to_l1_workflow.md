@@ -340,6 +340,12 @@ gain correction finite; mask blackfill vẫn riêng; không áp correction hai l
 
 ### 6.3. Drift compensation — §9.4
 
+Đã có bản PG L0/AUX **tương đối** qua `--l0-pg-drift`; xem
+[kiểm kê calibration, API/QC và đối chứng](sentinel1_pg_calibration.md).
+Absolute FFT/DN/model units và swath ratio chưa xác nhận, nên chưa bật
+default. Annotation inverse instrument PG là correction theo chiều trực
+tiếp sau chuẩn hóa node đầu; không đảo reciprocal thêm lần nữa.
+
 Nội suy tuyến tính PG complex theo absolute echo line/time từ hai PG valid
 gần nhất; đầu/cuối segment dùng ngoại suy tuyến tính từ hai giá trị valid
 đầu/cuối theo DAD. Nhân từng echo với hệ số PG đó (Eq. 9-17–9-18).
@@ -996,6 +1002,7 @@ quy định số block thuật toán nội bộ.
 | Header/sample-count validation | `src/sentinel1_processing/pre_processing/downlink_header_validation/`. |
 | I/Q bias | `src/sentinel1_processing/common/raw_data_correction.py`. |
 | Receiver gain compensation | `src/sentinel1_processing/common/receiver_gain_compensation.py`; cờ AUX_PP1, timing L0, hệ số AUX_INS; độc lập L1 trong default DCE. |
+| Calibration/PG drift L0 | `pre_processing/internal_calibration.py`, `utils/pg_calibration_input.py`, CLI `analyze_calibration.py`; default DCE chưa bật, flag `--l0-pg-drift` áp tương đối. |
 | RRF, dependent gain, SWST bias | `src/sentinel1_processing/range_processing/`. |
 | Range FFT/compression/valid extraction | `src/sentinel1_processing/azimuth_pre_processing/range/compression.py`. |
 | Data DC / geometry DC | `src/sentinel1_processing/doppler_centroid/estimation.py`, `geometry.py`. |
@@ -1065,6 +1072,11 @@ kiểm tra dimension và dùng test vật lý để xác định đúng quy ư�
 13. **Receiver amplitude:** Eq. 9-16 có căn `sqrt(GV)` ở mẫu số dù bản text
     trích xuất chỉ hiện GV. Test amplitude 10 dB phải chia sqrt(10), không
     chia 10; kiểm tra Doppler đơn thuần có thể bỏ sót lỗi scale này.
+14. **Inverse PG annotation:** `pgProductAmplitude/Phase` biểu diễn 1/PG
+    thiết bị cùng swath factor; đó đã là chiều correction. Chuẩn hóa
+    `value(t)/value(first)`, không dùng `value(first)/value(t)` như nhánh cũ.
+15. **PG sampling:** DAD nhắc 100 MHz, còn RGDEC0 trong packet hiện tại
+    có bandwidth 100 MHz và sample rate 112,60416672 MHz theo SPPDU.
 
 Nếu cần giải quyết một điểm chưa rõ, ghi quyết định cùng mục/phương trình,
 đơn vị, giả định và bằng chứng kiểm thử. Giữ workflow này làm bản đồ; PDF
