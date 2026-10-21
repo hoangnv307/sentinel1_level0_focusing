@@ -109,29 +109,40 @@ def pg_products(replicas, *, reference, pg_reference, oversampling_factor):
 def validate_pg(
     products, model, *, pg_amp_std_fraction, pg_phase_std_fraction,
     max_pg_amp_error, max_pg_phase_error, invalid_pg_max_fraction, use_model,
+    measurement_valid=None,
 ):
-    """§4.2.1.8: QC precedes swath gain ratio; explicit model fallback policy."""
-    products, model = _complex(products, 1), _complex(model, 1)
+    """§4.2.1.8: report QC/source; two-node requirement belongs to interpolation."""
+    products, model = np.asarray(products), _complex(model, 1)
+    measured = np.ones(products.shape, bool) if measurement_valid is None else np.asarray(measurement_valid)
     limits = (pg_amp_std_fraction, pg_phase_std_fraction, max_pg_amp_error, max_pg_phase_error)
-    if (products.shape != model.shape or len(products) < 2 or np.any(abs(products) == 0)
+    if (products.ndim != 1 or not np.iscomplexobj(products) or products.shape != model.shape
+            or measured.shape != products.shape or measured.dtype.kind != "b"
+            or not np.isfinite(products[measured]).all() or np.any(abs(products[measured]) == 0)
             or np.any(abs(model) == 0) or any(not _nonnegative_real(v) for v in limits)
             or not _nonnegative_real(invalid_pg_max_fraction) or invalid_pg_max_fraction > 1
             or not isinstance(use_model, (bool, np.bool_))):
         raise ValueError("PG/model hoặc configurable thresholds không hợp lệ.")
-    amplitude, phase = abs(products), np.unwrap(np.angle(products))
-    relative = ((abs(amplitude-amplitude.mean()) <= pg_amp_std_fraction*amplitude.std()) &
-                (abs(phase-phase.mean()) <= pg_phase_std_fraction*phase.std()))
-    absolute = ((abs(amplitude-abs(model)) < max_pg_amp_error) &
-                (abs(np.angle(products/model)) < max_pg_phase_error))
+    products = products.astype(np.complex128)
+    checks = np.zeros((4, len(products)), bool)
+    if measured.any():
+        amplitude, phase = abs(products[measured]), np.unwrap(np.angle(products[measured]))
+        checks[:, measured] = [abs(amplitude-amplitude.mean()) <= pg_amp_std_fraction*amplitude.std(),
+                               abs(phase-phase.mean()) <= pg_phase_std_fraction*phase.std(),
+                               abs(amplitude-abs(model[measured])) < max_pg_amp_error,
+                               abs(np.angle(products[measured]/model[measured])) < max_pg_phase_error]
+    relative, absolute = checks[:2].all(axis=0), checks[2:].all(axis=0)
     valid = relative & absolute
     invalid_fraction = float(np.mean(~valid))
     fallback = bool(use_model or invalid_fraction > invalid_pg_max_fraction)
     selected = np.ones(len(products), dtype=bool) if fallback else valid
-    if selected.sum() < 2:
-        raise ValueError("Không đủ hai PG valid; AUX không yêu cầu fallback theo invalid fraction hiện tại.")
+    names = ("relative_amplitude", "relative_phase", "absolute_amplitude", "absolute_phase")
+    reasons = [[name for name, passed in zip(names, checks[:, i]) if not passed]
+               if measured[i] else ["measurement_invalid"] for i in range(len(products))]
     return {"relative_valid": relative.tolist(), "absolute_valid": absolute.tolist(),
             "valid": valid.tolist(), "invalid_fraction": invalid_fraction,
-            "source": "model" if fallback else "extracted", "selected": selected.tolist()}, model if fallback else products
+            "source": "model" if fallback else "extracted", "selected": selected.tolist(),
+            "rejection_reasons": reasons, "interpolation_available": bool(selected.sum() >= 2),
+            "interpolation_unavailable_reason": None if selected.sum() >= 2 else "Cần ít nhất hai node PG được chọn để nội suy."}, model if fallback else products
 
 
 def mean_internal_delay(peak_lags_samples, *, sample_rate_hz, delta_t_guard1_s, delta_t_suppr_s, valid):

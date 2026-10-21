@@ -526,6 +526,13 @@ def main():
         pg_times, pg_values, calibration_report = analyze_calibration(
             level0, product, oversampling_factor=args.pg_oversampling_factor,
             denominator_relative_floor=args.pg_denominator_relative_floor)
+        args.output.mkdir(parents=True, exist_ok=True)
+        calibration_path = args.output/"calibration.json"
+        calibration_path.write_text(json.dumps(calibration_report, ensure_ascii=False, indent=2, allow_nan=False)+"\n")
+        if args.internal_delay_source == "l0" and not calibration_report["internal_delay"]["available"]:
+            raise ValueError(f"Không có peak hợp lệ để đo delay L0; xem {calibration_path}.")
+        if args.l0_pg_drift and not calibration_report["quality"]["interpolation_available"]:
+            raise ValueError(f"Không đủ hai node PG để nội suy; xem {calibration_path}.")
     if args.l0_pg_drift:
         pg_report = calibration_report
         pg_provider = lambda query: interpolate_pg(pg_times, pg_values, query)

@@ -2,12 +2,18 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import json
 import unittest
+from unittest.mock import patch, Mock
 
 import numpy as np
+import pandas as pd
 import sentinel1decoder
+from sentinel1decoder.enums import SignalType, RangeDecimation
 
 from sentinel1_processing.pre_processing import internal_calibration as cal
+from sentinel1_processing.utils import pg_calibration_input as adapter
 from sentinel1_processing.utils.pg_calibration_input import analyze_calibration, read_configuration
 from sentinel1_processing.doppler_centroid.estimation import lag1_accc
 
@@ -179,10 +185,15 @@ class InternalCalibrationTest(unittest.TestCase):
         self.assertEqual(quality["relative_valid"], [True]*3)
         self.assertEqual(quality["absolute_valid"], [True, True, False])
 
-    def test_no_two_valid_nodes_fails_instead_of_inventing_an_unrequested_fallback(self):
-        with self.assertRaisesRegex(ValueError, "Không đủ hai PG valid"):
-            cal.validate_pg(np.ones(2, complex), np.ones(2, complex),
-                            **{**self.qc, "max_pg_amp_error": 0., "invalid_pg_max_fraction": 1.})
+    def test_pg_qc_reports_shortage_and_interpolation_enforces_two_nodes_without_extra_fallback(self):
+        quality, chosen = cal.validate_pg(np.ones(2, complex), np.ones(2, complex),
+                                          **{**self.qc, "max_pg_amp_error": 0., "invalid_pg_max_fraction": 1.})
+        self.assertFalse(quality["interpolation_available"])
+        self.assertEqual(quality["source"], "extracted")
+        self.assertEqual(quality["selected"], [False, False])
+        self.assertEqual(quality["rejection_reasons"], [["absolute_amplitude"]]*2)
+        with self.assertRaises(ValueError):
+            cal.interpolate_pg(np.array([0., 1.])[quality["selected"]], chosen[quality["selected"]], [0.5])
 
     def test_interpolation_extrapolation_is_complex_linear_and_preserves_phase_wrap(self):
         np.testing.assert_allclose(cal.interpolate_pg([10, 20], [1+0j, 3j], [0, 15, 30]),
@@ -220,12 +231,129 @@ class InternalCalibrationTest(unittest.TestCase):
             with self.subTest(floor=floor), self.assertRaises(ValueError):
                 cal.reconstruct_replica(*[self.signal]*5, denominator_relative_floor=floor)
         for override in ({"max_pg_amp_error": None}, {"pg_phase_std_fraction": [1.]},
-                         {"invalid_pg_max_fraction": 1.1}, {"use_model": "true"}):
+                         {"invalid_pg_max_fraction": 1.1}, {"use_model": "true"},
+                         {"measurement_valid": [1, 1]}, {"measurement_valid": [True]}):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 cal.validate_pg(np.ones(2, complex), np.ones(2, complex), **{**self.qc, **override})
         for ref in (None, 0., [1.]):
             with self.subTest(reference=ref), self.assertRaises(ValueError):
                 cal.pg_products(np.array([self.signal]*2), reference=self.signal, pg_reference=ref, oversampling_factor=16)
+
+
+class CalibrationAvailabilityTest(unittest.TestCase):
+    """Synthetic PCC sequences with known transfer functions; no external data."""
+
+    def setUp(self):
+        self.rate = sentinel1decoder.utilities.range_dec_to_sample_rate(RangeDecimation(0))
+        orders = {name: dict(order=[1, 2], method="Average" if name == "ApdnCal" else "PCC2")
+                  for name in ("TxCal", "RxCal", "EpdnCal", "TaCal", "ApdnCal")}
+        self.configuration = dict(orders={"pg": orders, "replica": orders},
+            perform_internal_calibration=True, pg_source="Extracted", pg_reference=[1., 0.],
+            constant_pg_model=[1., 0.], delta_t_guard1_s=0., delta_t_suppr_s=0.,
+            thresholds=dict(pg_amp_std_fraction=1e6, pg_phase_std_fraction=1e6, max_pg_amp_error=10.,
+                            max_pg_phase_error=6.28, invalid_pg_max_fraction=1.))
+
+    def analyze(self, *, gains=(1., 1.), lags=(2, 4), singular=(), **overrides):
+        frames, samples = {}, {}
+        delta = np.eye(1, 16, dtype=complex)[0]
+        for sequence, (gain, lag) in enumerate(zip(gains, lags)):
+            replica = np.roll(np.r_[np.ones(8), np.zeros(8)], lag).astype(complex)*gain
+            for offset, code in enumerate((8, 9, 10, 11, 12)):
+                chunk = 5*sequence+offset
+                frame = pd.DataFrame({
+                    "Signal Type": [SignalType(code)]*2, "Coarse Time": [100.+sequence]*2,
+                    "Fine Time": [offset*.01, offset*.01+.001], "Error Flag": [False]*2,
+                    "BAQ Mode": [RangeDecimation(0)]*2, "Range Decimation": [RangeDecimation(0)]*2,
+                    "Swath Number": [89]*2, "Cal Type": [0]*2, "Calibration Beam Address": [0]*2,
+                    "Rx Gain": [0.]*2, "Rx Channel ID": [RangeDecimation(0)]*2,
+                    "Tx Pulse Number": [1, 2], "Tx Pulse Length": [8/self.rate]*2,
+                    "Tx Pulse Start Frequency": [0.]*2, "Tx Ramp Rate": [0.]*2,
+                    "Number of Quads": [8]*2, "Space Packet Count": [2*chunk, 2*chunk+1],
+                }, index=[2*chunk, 2*chunk+1])
+                frames[chunk] = frame
+                pulse = replica if code == 8 else np.zeros(16, complex) if code == 10 and sequence in singular else delta
+                samples[2*chunk] = np.array([pulse, pulse if code == 12 else -pulse])
+        level0 = SimpleNamespace(filename="s1a-s4-raw-s-vv-synthetic.dat", acquisition_chunks=list(frames),
+                                 get_acquisition_chunk_metadata=frames.__getitem__)
+        decoder = Mock()
+        decoder.decode_packets.side_effect = lambda metadata: samples[metadata.index[0]]
+        with patch.object(adapter, "read_configuration", return_value=self.configuration), \
+                patch.object(adapter.sentinel1decoder, "Level0Decoder", return_value=decoder):
+            result = adapter.analyze_calibration(level0, Path("unused"),
+                **{**dict(oversampling_factor=16, denominator_relative_floor=0.), **overrides})
+        json.dumps(result[2], allow_nan=False)
+        return result
+
+    def test_one_sequence_measures_delay_but_cannot_interpolate_pg(self):
+        times, values, report = self.analyze(gains=(1.,), lags=(2,))
+        self.assertTrue(report["internal_delay"]["available"])
+        self.assertAlmostEqual(report["internal_delay"]["mean_s"]*self.rate, 2., places=9)
+        self.assertFalse(report["quality"]["interpolation_available"])
+        with self.assertRaises(ValueError):
+            cal.interpolate_pg(times, values, [100.])
+
+    def test_invalid_first_peak_is_reported_and_second_peak_alone_measures_delay(self):
+        _, _, report = self.analyze(gains=(0., 1.))
+        self.assertEqual(report["internal_delay"]["valid_sequence_indices"], [1])
+        self.assertAlmostEqual(report["internal_delay"]["mean_s"]*self.rate, 4., places=9)
+        self.assertIn("correlation peak", report["nodes"][0]["replica_rejection_reason"])
+        self.assertIsNone(report["nodes"][0]["internal_delay_diagnostic_s"])
+        self.assertEqual(report["nodes"][0]["pg_rejection_reasons"], ["measurement_invalid"])
+
+    def test_all_pg_qc_failures_do_not_change_delay_or_invent_model_fallback(self):
+        self.configuration["thresholds"]["max_pg_amp_error"] = 0.
+        times, values, report = self.analyze()
+        self.assertAlmostEqual(report["internal_delay"]["mean_s"]*self.rate, 3., places=9)
+        self.assertEqual(report["quality"]["source"], "extracted")
+        self.assertFalse(report["quality"]["interpolation_available"])
+        self.assertEqual(report["quality"]["invalid_fraction"], 1.)
+        self.assertEqual(report["quality"]["rejection_reasons"], [["absolute_amplitude"]]*2)
+        self.assertEqual((len(times), len(values)), (0, 0))
+
+    def test_pg_qc_rejects_one_node_while_delay_still_averages_both_peaks(self):
+        self.configuration["thresholds"]["max_pg_amp_error"] = .1
+        _, _, report = self.analyze(gains=(1., 2.))
+        self.assertEqual(report["quality"]["selected"], [True, False])
+        self.assertEqual(report["internal_delay"]["valid_sequence_indices"], [0, 1])
+        self.assertAlmostEqual(report["internal_delay"]["mean_s"]*self.rate, 3., places=9)
+
+    def test_all_invalid_peaks_report_unavailable_delay_and_no_fabricated_pg(self):
+        times, values, report = self.analyze(gains=(0., 0.))
+        self.assertFalse(report["internal_delay"]["available"])
+        self.assertIsNone(report["internal_delay"]["mean_s"])
+        self.assertEqual(report["internal_delay"]["valid_sequence_indices"], [])
+        self.assertEqual(report["quality"]["invalid_fraction"], 1.)
+        self.assertFalse(report["quality"]["interpolation_available"])
+        self.assertTrue(all(n["replica_rejection_reason"] for n in report["nodes"]))
+        self.assertEqual((len(times), len(values)), (0, 0))
+
+    def test_invalid_peak_fraction_counts_all_sequences_and_obeys_aux_model_policy(self):
+        self.configuration["thresholds"]["invalid_pg_max_fraction"] = .25
+        _, values, report = self.analyze(gains=(0., 1.))
+        self.assertEqual(report["quality"]["invalid_fraction"], .5)
+        self.assertEqual(report["quality"]["source"], "model")
+        np.testing.assert_array_equal(values, [1., 1.])
+        self.assertEqual(report["internal_delay"]["valid_sequence_indices"], [1])
+
+    def test_model_can_supply_pg_nodes_but_never_manufactures_a_delay_peak(self):
+        self.configuration["pg_source"] = "Model"
+        _, values, report = self.analyze(gains=(0., 0.))
+        self.assertTrue(report["quality"]["interpolation_available"])
+        self.assertEqual(report["quality"]["source"], "model")
+        np.testing.assert_array_equal(values, [1., 1.])
+        self.assertFalse(report["internal_delay"]["available"])
+
+    def test_singular_reconstruction_and_outside_support_have_sequence_rejection_reasons(self):
+        _, _, report = self.analyze(singular=(0,), lags=(2, 15))
+        self.assertIn("spectral support", report["nodes"][0]["replica_rejection_reason"])
+        self.assertIn("ngoài cửa sổ", report["nodes"][1]["replica_rejection_reason"])
+        self.assertFalse(report["internal_delay"]["available"])
+
+    def test_invalid_algorithm_configuration_is_fatal_instead_of_bad_sequence(self):
+        for override in ({"oversampling_factor": 1}, {"oversampling_factor": True},
+                         {"denominator_relative_floor": -1.}, {"denominator_relative_floor": np.nan}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                self.analyze(**override)
 
 
 PRODUCT = Path.home()/"sar_data/focusing_data/product_1"

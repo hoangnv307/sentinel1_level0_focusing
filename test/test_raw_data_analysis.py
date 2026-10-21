@@ -1,6 +1,7 @@
 """Đối chứng DAD §4.1 với dữ liệu biết trước và bộ chọn echo L0 giả lập."""
 
 import importlib.util
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -418,6 +419,36 @@ class RawDataSelectionTest(unittest.TestCase):
         with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
             _, _, _, diagnostics = demo.compress_echoes(self.level0, aux, tmp, internal_delay_s=1.8/fs)
         self.assertEqual([d["hardware_delay_far_throwaway_samples"] for d in diagnostics], [2, 3])
+
+
+class CalibrationConsumerTest(unittest.TestCase):
+    def test_cli_only_requires_requested_calibration_and_saves_report_before_failure(self):
+        for delay_available, pg_available, enable_pg, delay_source, expected_error in (
+                (True, False, False, "l0", RuntimeError), (True, False, True, "l0", ValueError),
+                (False, False, False, "l0", ValueError), (False, True, True, "l0", ValueError),
+                (False, True, True, "none", RuntimeError)):
+            with self.subTest(delay_available=delay_available, pg_available=pg_available, enable_pg=enable_pg), \
+                    TemporaryDirectory() as folder:
+                product, output = Path(folder)/"product", Path(folder)/"out"
+                (product/"level-0").mkdir(parents=True)
+                (product/"level-1").mkdir()
+                (product/"level-0/s1a-s4-raw-s-vv-synthetic.dat").touch()
+                (product/"level-1/s1a-s4-slc-vv-synthetic.xml").write_text("<product/>")
+                report = {"internal_delay": {"available": delay_available, "mean_s": 1e-7 if delay_available else None},
+                          "quality": {"interpolation_available": pg_available},
+                          "nodes": [{"replica_rejection_reason": None if delay_available else "No valid peak"}]}
+                argv = ["demo", "--product", str(product), "--output", str(output), "--internal-delay-source", delay_source]
+                if enable_pg:
+                    argv.append("--l0-pg-drift")
+                with patch("sys.argv", argv), patch.object(demo, "read_auxiliary", return_value={}), \
+                        patch.object(demo.sentinel1decoder, "Level0File"), \
+                        patch.object(demo, "analyze_calibration", return_value=([100., 101.], np.ones(2, complex), report)), \
+                        patch.object(demo, "analyze_echoes", side_effect=RuntimeError("Reached raw analysis")) as echoes:
+                    message = "Reached raw analysis" if expected_error is RuntimeError else "peak hợp lệ" if not delay_available else "hai node PG"
+                    with self.assertRaisesRegex(expected_error, message):
+                        demo.main()
+                    self.assertEqual(echoes.call_count, int(expected_error is RuntimeError))
+                self.assertEqual(json.loads((output/"calibration.json").read_text()), report)
 
 
 PRODUCT_RAW = Path.home()/"sar_data/focusing_data/product_1/level-0/s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat"

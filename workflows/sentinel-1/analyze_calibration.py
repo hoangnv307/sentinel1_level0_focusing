@@ -27,6 +27,8 @@ def main():
     times, corrections, report = analyze_calibration(
         level0, args.product, oversampling_factor=args.oversampling_factor,
         denominator_relative_floor=args.denominator_relative_floor)
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output/"calibration.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)+"\n")
     # Read L1 only after the L0/AUX processing and selection have completed.
     annotation = list(args.product.glob("level-1/s1a-s4-slc-vv-*.xml"))
     if len(annotation) != 1:
@@ -43,13 +45,19 @@ def main():
     if len(ref_times) == len(report["nodes"]):
         report["l1_diagnostic_only"]["aligned_time_residual_s"] = (
             np.array([n["time_gps_s"] for n in report["nodes"]])+offset-ref_times).tolist()
-        inverse = np.array([complex(*n["inverse_pgcal"]) for n in report["nodes"]])
-        report["l1_diagnostic_only"]["inverse_pgcal_amplitude_relative_error"] = (abs(inverse)/abs(values)-1).tolist()
-        report["l1_diagnostic_only"]["inverse_pgcal_phase_error_rad"] = np.angle(inverse/values).tolist()
+        report["l1_diagnostic_only"]["inverse_pgcal_amplitude_relative_error"] = [
+            float(abs(complex(*n["inverse_pgcal"]))/abs(v)-1) if n["inverse_pgcal"] is not None else None
+            for n, v in zip(report["nodes"], values)]
+        report["l1_diagnostic_only"]["inverse_pgcal_phase_error_rad"] = [
+            float(np.angle(complex(*n["inverse_pgcal"])/v)) if n["inverse_pgcal"] is not None else None
+            for n, v in zip(report["nodes"], values)]
         report["l1_diagnostic_only"]["comparison_note"] = "Compare 1/PGcal to annotation without fitting a complex scale; PGref is not in annotation."
     figure, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    axes[0].plot(times-times[0], abs(corrections), "o-", label="L0/AUX, nominal 1/N reference")
-    axes[1].plot(times-times[0], np.angle(corrections), "o-", label="L0/AUX")
+    if report["quality"]["interpolation_available"]:
+        axes[0].plot(times-times[0], abs(corrections), "o-", label="L0/AUX, nominal 1/N reference")
+        axes[1].plot(times-times[0], np.angle(corrections), "o-", label="L0/AUX")
+    else:
+        axes[0].text(.02, .05, report["quality"]["interpolation_unavailable_reason"], transform=axes[0].transAxes)
     axes[0].plot(ref_times-ref_times[0], abs(values/values[0]), "x--", label="L1 inverse-PG, direct normalization")
     axes[1].plot(ref_times-ref_times[0], np.angle(values/values[0]), "x--", label="L1")
     for ax in axes:
@@ -63,6 +71,7 @@ def main():
     plt.close(figure)
     (args.output/"calibration.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)+"\n")
     print(f"{len(report['inventory'])} chunks; {len(report['nodes'])} PG nodes; source={report['quality']['source']}")
+    print(f"Delay available={report['internal_delay']['available']}; PG interpolation available={report['quality']['interpolation_available']}")
     print("PG relative:", corrections)
     print(f"Đã ghi {args.output/'calibration.json'}")
 
