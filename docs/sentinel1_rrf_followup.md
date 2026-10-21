@@ -5,6 +5,11 @@ kiểm tra chirp, chuẩn hóa và support của Range Reference Function, rồi
 thử hai cách mở rộng phổ do dự án đề xuất. Không dùng RMSE với L1 để
 nhận một giả thuyết là thuật toán IPF.
 
+**Đính chính receiver:** các lượt so sánh input tham chiếu bên dưới chạy
+trước khi sửa mẫu số RX từ GV sang **sqrt(GV)** theo Eq. 9-16. Giữ số
+liệu lịch sử, xem [báo cáo RX](sentinel1_receiver_gain_compensation.md) cho
+luồng hiện tại. Các test RRF về energy/support vẫn độc lập với lỗi scale RX.
+
 ## 1. Những gì đã xác định từ tài liệu
 
 DAD §6.1.1, trang in 6-3–6-4 (PDF trang 70–71), mô tả replica whitening,

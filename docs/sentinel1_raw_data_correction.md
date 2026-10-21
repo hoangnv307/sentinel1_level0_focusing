@@ -5,6 +5,10 @@ Triển khai và đối chứng ngày 21/10/2026 trên S1A/S4/VV `product_1`.
 dùng thống kê đã chọn để hiệu chỉnh từng mẫu BAQ-decoded trước receiver
 variation, PG, range compression và DCE.
 
+Cập nhật tiếp theo: [receiver compensation §9.2.3](sentinel1_receiver_gain_compensation.md)
+đã được đưa vào default L0/AUX. Các bảng DCE trong tài liệu này là lượt
+raw-I/Q trước khi bật RX mặc định; có thể tái chạy bằng cờ tắt RX.
+
 ## Công thức, dấu và đơn vị
 
 Đã đọc trực tiếp DAD Issue 2/5, PDF trang **124–125**, trang in **9-7–9-8**,
@@ -78,7 +82,7 @@ chỉ dùng cho thử nghiệm. Một bộ statistic được chọn cho toàn a
 scope, dùng chung hai chunk và mọi batch. Thứ tự thực thi:
 
 ```text
-BAQ decode → I/Q correction → receiver variation (reference mode)
+BAQ decode → I/Q correction → receiver variation (L0/AUX)
            → PG (reference mode) → range compression → EAP/RSL (reference mode) → DCE
 ```
 
@@ -103,6 +107,7 @@ Giữ mặc định AUX (bias=true, gain=false, quadrature=false):
 ```bash
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
   workflows/sentinel-1/estimate_doppler_centroid.py \
+  --no-correct-rx-variation \
   --output output/sentinel-1/raw_correction/aux_default
 ```
 
@@ -111,6 +116,7 @@ Bật cả ba hiệu chỉnh để đối chứng:
 ```bash
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
   workflows/sentinel-1/estimate_doppler_centroid.py \
+  --no-correct-rx-variation \
   --correct-iq-gain --correct-iq-quadrature \
   --output output/sentinel-1/raw_correction/all_enabled
 ```
@@ -197,7 +203,7 @@ vẫn đạt. Không sửa test cũ thành skip để che lỗi fixture.
 
 Phạm vi hoàn thiện là **§9.2.1**. Chưa bổ sung spurious filtering §9.2.2,
 chưa tái tạo chính xác IPF Extended Tapered RRF, và chưa chuyển notebook
-focus S6 sang luồng raw analysis S4 này. Mặc định DCE vẫn chưa có RX/PG/
-EAP/RSL; các bước đó chỉ có ở nhánh reference input đã mô tả trong
+focus S6 sang luồng raw analysis S4 này. RX nay đã có ở default L0/AUX;
+PG/EAP/RSL vẫn chỉ có ở nhánh reference input đã mô tả trong
 [audit DCE](sentinel1_dce_audit.md). L1 tiếp tục là đối chứng sau tính toán,
 ngoại trừ ngoại lệ nghiên cứu được ghi rõ cho layout/reference mode.

@@ -136,8 +136,8 @@ hình, nguồn file, I/Q bias, các ước lượng, coherence, valid mask, RMS 
 lệch với L1. Nếu fit RMS vượt ngưỡng, `selected_source` chuyển sang geometry;
 data estimate vẫn được giữ để chẩn đoán.
 
-Chế độ mặc định chưa phải tái hiện DCE đầy đủ của IPF: chưa áp PG drift, receiver
-variation, EAP/RSL hoặc RFI mitigation; từ cập nhật 21/10/2026, bias lấy từ
+Chế độ mặc định chưa phải tái hiện DCE đầy đủ của IPF: chưa áp PG drift,
+EAP/RSL hoặc RFI mitigation; từ cập nhật 21/10/2026, bias lấy từ
 raw analysis trên toàn bộ echo hợp lệ, dùng chung hai chunk. Batch 256
 không còn giới hạn số echo phân tích. Phạm vi chọn mẫu có thể cấu hình
 qua `--analysis-start-line`, `--analysis-step`, `--analysis-lines`,
@@ -153,6 +153,13 @@ JSON ghi tham số/nguồn thực dùng và thống kê trước–sau trên cù
 Xem [công thức, API, 13 test mới và đối chứng S4/VV](docs/sentinel1_raw_data_correction.md).
 Khi bật cả ba, gain về `1,000000015`, theta về `−4,76e−8 rad`, nhưng
 RMSE DCE với L1 không cải thiện; tiếp tục giữ bias bật, gain/quadrature tắt.
+Receiver gain compensation §9.2.3 hiện chạy độc lập từ L0/AUX theo
+`commonProcParams/correctRxVariationFlag=true`; dùng
+`--no-correct-rx-variation` để đối chứng với luồng cũ chưa có RX.
+**Eq. 9-16 chia complex signal cho `sqrt(GV)`**, trong đó
+`GV=10^((trend_dB+overshoot_dB)/10)` là power gain. Nhánh tham chiếu cũ
+đã chia nhầm cho GV vì text extraction mất dấu căn; số liệu cũ có RX cần
+đọc cùng [báo cáo sửa receiver compensation](docs/sentinel1_receiver_gain_compensation.md).
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.
 
@@ -160,8 +167,8 @@ Kết quả chạy trên toàn bộ 16.500 echo của `product_1`:
 
 | Block (0-based, stop exclusive) | RMS fit | RMSE Fine DC so với L1 | RMSE polynomial so với L1 |
 |---|---|---|---|
-| `[0, 6000)` | 1,425 Hz | 1,362 Hz | 1,331 Hz |
-| `[10500, 16500)` | 1,214 Hz | 1,451 Hz | 1,410 Hz |
+| `[0, 6000)` | 1,425 Hz | 1,363 Hz | 1,331 Hz |
+| `[10500, 16500)` | 1,214 Hz | 1,452 Hz | 1,411 Hz |
 
 Cả hai block giữ đủ 20 điểm fit, ambiguity bằng 0, RMS dưới 20 Hz nên
 `selected_source=data`. RMS fit đo độ phù hợp polynomial với điểm DC của
@@ -183,7 +190,7 @@ giữ nguyên kết quả demo cơ bản. Các tham số và phép biến đổi
 | Hiệu chỉnh | Nguồn / cách áp dụng |
 |---|---|
 | I/Q bias | L1 `rawDataAnalysis/support/*BiasUsedForCorrection`: trừ `0,2893930077552795 + j·0,3621337115764618` khỏi echo trước mọi gain correction. |
-| Receiver variation | Hệ số S4/RX V trong AUX_INS; DAD §9.2.3, time trend tính từ cuối TX pulse, overshoot tính từ `t_RX` sau suppressed samples; đơn vị µs, chia gain theo Eq. 9-16. |
+| Receiver variation | Hệ số S4/RX V trong AUX_INS, cờ từ AUX_PP1; DAD §9.2.3, trend tính từ cuối TX pulse, overshoot từ `t_RX` sau suppressed samples; đơn vị µs, chia `sqrt(GV)` theo Eq. 9-16. |
 | PG drift tương đối | Hai replica PG valid trong L1; đổi annotation reciprocal thành correction rồi nội/ngoại suy complex theo DAD §9.4. Chuẩn hóa node đầu bằng 1, giữ thay đổi gain/phase theo thời gian. |
 | Range replica | Nominal amplitude/phase S4/VV từ AUX_INS (cập nhật 21/10/2026); L1 `referenceReplica/gain` và delay tham chiếu vẫn được giữ. Builder dùng whitening và normalization theo Parseval; coefficient L1 chỉ để đối chiếu độ làm tròn. Không thêm Hamming. |
 | Internal delay | L1 `referenceReplica/timeDelay=4,333092e-7 s`: advance output của matched filter để bù positive hardware delay; tone/chirp test kiểm tra chiều dịch. |
@@ -205,6 +212,9 @@ Bank EAP được kiểm tra range/time coverage, không âm thầm clamp ngoài
 
 Kết quả audit ngày 20/10/2026 trên toàn bộ 16.500 echo (trước khi chuyển
 nominal coefficients sang AUX; xem [kiểm tra RRF ngày 21/10](docs/sentinel1_rrf_followup.md)):
+
+Đây là số liệu lịch sử trước khi sửa mẫu số RX từ GV sang sqrt(GV);
+xem [kết quả RX hiện tại](docs/sentinel1_receiver_gain_compensation.md).
 
 | Block | RMS fit | RMSE Fine DC/L1: cơ bản → hiệu chỉnh | RMSE polynomial/L1 sau hiệu chỉnh |
 |---|---|---|---|

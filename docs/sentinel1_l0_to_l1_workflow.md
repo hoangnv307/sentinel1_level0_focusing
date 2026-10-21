@@ -322,7 +322,11 @@ giảm lưu trữ. Demo có thể cache decoded data; cache không được thay
 4. Receiver gain compensation (§9.2.3): tính gain trend theo thời gian từ
    cuối TX pulse và overshoot theo thời gian từ sampling window; đọc hệ số
    đúng swath/RX polarisation, tính đúng suppressed-time convention, đơn vị μs.
-   Làm theo mô hình Eq. 9-9–9-16; không tự đổi quy ước dB/power/amplitude.
+   Eq. 9-14–9-15 tạo **power** GV bằng `10^(dB/10)`;
+   Eq. 9-16 chia complex raw cho **sqrt(GV)**. Đã mở PDF trang 126–127
+   vì text extraction làm mất căn; nhánh reference trước sửa đã chia sai GV.
+   Demo hiện tính từ L0/AUX cho cả hai mode, cờ AUX_PP1
+   `correctRxVariationFlag`; xem [công thức và đối chứng RX](sentinel1_receiver_gain_compensation.md).
 
 §9.2.1 đã có operator `common.raw_data_correction.apply`: nhận ba cờ
 và bốn statistic tường minh, thứ tự bias → gain → quadrature, theta radians,
@@ -991,11 +995,12 @@ quy định số block thuật toán nội bộ.
 | Decoder L0 | Dependency `sentinel1decoder`, được notebook gọi để đọc metadata/chunk và I/Q. |
 | Header/sample-count validation | `src/sentinel1_processing/pre_processing/downlink_header_validation/`. |
 | I/Q bias | `src/sentinel1_processing/common/raw_data_correction.py`. |
+| Receiver gain compensation | `src/sentinel1_processing/common/receiver_gain_compensation.py`; cờ AUX_PP1, timing L0, hệ số AUX_INS; độc lập L1 trong default DCE. |
 | RRF, dependent gain, SWST bias | `src/sentinel1_processing/range_processing/`. |
 | Range FFT/compression/valid extraction | `src/sentinel1_processing/azimuth_pre_processing/range/compression.py`. |
 | Data DC / geometry DC | `src/sentinel1_processing/doppler_centroid/estimation.py`, `geometry.py`. |
 | Demo DCE S4 với layout suy từ L1 | `workflows/sentinel-1/estimate_doppler_centroid.py`; ngoại lệ nghiên cứu theo yêu cầu người dùng, không đổi cấu hình notebook S6. |
-| Input DCE dùng hiệu chỉnh tính sẵn L1 | `utils/dce_reference_input.py`, chỉ được CLI gọi khi có `--l1-input-corrections`; bias/RX/PG trước range compression, EAP/RSL sau range compression. |
+| Input DCE dùng hiệu chỉnh tính sẵn L1 | `utils/dce_reference_input.py`, chỉ được CLI gọi khi có `--l1-input-corrections`; bias/PG trước range compression, EAP/RSL sau; receiver dùng core L0/AUX chung với default. |
 | Orbit geometry/Vr | `src/sentinel1_processing/common/effective_velocity.py`. |
 | Azimuth FFT/padding | `src/sentinel1_processing/azimuth_pre_processing/`. |
 | SRC, RCMC, azimuth filter | `src/sentinel1_processing/azimuth_processing/`. |
@@ -1057,6 +1062,9 @@ kiểm tra dimension và dùng test vật lý để xác định đúng quy ư�
     D-factor có căn bậc hai. Bản text trích xuất có thể làm mất các ký hiệu đó.
 12. **Calibration LUT:** bảng LUT là hệ số amplitude nhưng calibration
     power chia bình phương LUT. Không nhầm `dn` LUT với raw DN/complex sample.
+13. **Receiver amplitude:** Eq. 9-16 có căn `sqrt(GV)` ở mẫu số dù bản text
+    trích xuất chỉ hiện GV. Test amplitude 10 dB phải chia sqrt(10), không
+    chia 10; kiểm tra Doppler đơn thuần có thể bỏ sót lỗi scale này.
 
 Nếu cần giải quyết một điểm chưa rõ, ghi quyết định cùng mục/phương trình,
 đơn vị, giả định và bằng chứng kiểm thử. Giữ workflow này làm bản đồ; PDF

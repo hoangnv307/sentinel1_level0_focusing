@@ -4,6 +4,11 @@ Triển khai ngày 21/10/2026 cho S1A/S4/VV `product_1`. Đây là bước 1 c�
 đề xuất sau [audit DCE](sentinel1_dce_audit.md): tạo thống kê và bias từ
 L0, với API cấu hình tường minh và các test có đối chứng.
 
+Bước tiếp theo đã tích hợp [receiver compensation L0/AUX](sentinel1_receiver_gain_compensation.md).
+Các bảng DCE lịch sử ở đây có trước thay đổi đó; default cũ chưa RX có
+thể tái lập bằng `--no-correct-rx-variation`. Nhánh tham chiếu cũ chia nhầm
+GV; công thức hiện tại chia sqrt(GV) theo Eq. 9-16.
+
 ## Luồng và phạm vi
 
 Đọc header → chọn ECHO S4/RX V → loại packet Error Flag → chọn subset

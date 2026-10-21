@@ -3,6 +3,10 @@
 Ngày kiểm tra: 20/10/2026. Dữ liệu: `~/sar_data/focusing_data/product_1`.
 Cập nhật bước RRF ngày 21/10/2026 nằm trong
 [báo cáo tiếp theo](sentinel1_rrf_followup.md); giữ nguyên số liệu lịch sử bên dưới.
+**Đính chính RX:** các lượt cũ có receiver correction đã chia complex raw
+cho GV thay vì **sqrt(GV)** của Eq. 9-16 (dấu căn bị mất khi trích text).
+Xem [triển khai và kết quả RX đã sửa](sentinel1_receiver_gain_compensation.md).
+Các số RMSE lịch sử bên dưới không đại diện cho công thức RX hiện tại.
 Phạm vi là đường xử lý **L0 → input range-compressed → Doppler centroid**
 của demo S4/VV. Các tham số dùng sau DCE được phân loại để tránh đưa nhầm
 vào estimator; báo cáo này không xác nhận chất lượng ảnh SLC sau focus.
@@ -77,7 +81,7 @@ workflow và DAD §5, §6.1–6.2, §9.2–9.6.
 | I/Q bias tham chiếu | `0.2893930078 + 0.3621337116j` | L1 `support/*BiasUsedForCorrection`; AUX cho phép bias correction |
 | I/Q gain / orthogonality | Đều tắt | Cờ AUX_PP1; không tự bật vì XML có số thống kê |
 | RX gain header | `-6 dB`, hằng | Scale toàn cảnh không làm đổi lag-1 phase; không đồng nhất với RX variation |
-| RX variation | Hệ số rational trend 8 phần tử, overshoot 5 phần tử, kênh V | AUX_INS; thời gian tính µs, chia `10^(GV_dB/10)` theo DAD |
+| RX variation | Hệ số rational trend 8 phần tử, overshoot 5 phần tử, kênh V | Lượt cũ chia `10^(GV_dB/10)` là sai; DAD Eq. 9-16 phải chia căn của power GV |
 | RX correction range | Gain 0,943959–1,026669 ở chunk 13; 0,944980–1,026922 ở chunk 14 | Không thấy mẫu số 0, gain không dương hoặc non-finite |
 | Replica amplitude / phase | `[1,0,0,0]`; phase cycles `[0,-800.9333,4.914177e11,0]` | L1 reference replica; AUX nominal có thêm chữ số. Không so hai chirp khác gốc thời gian bằng trực tiếp coefficient |
 | Internal delay | `4.333092e-7 s`, khoảng 24,40 mẫu | Advance bằng phase ramp dương; bỏ thêm `ceil(delay×Fr)=25` mẫu mép xa |

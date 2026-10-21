@@ -41,6 +41,15 @@ cho Sentinel-1.
   compressor để không trừ hai lần. Giữ mặc định AUX: bias bật, gain/quad
   tắt; thử nghiệm bật cả ba không cải thiện RMSE DCE. JSON có thống kê
   trước–sau cùng subset và nguồn tham số; theta luôn radians.
+- Receiver compensation §9.2.3 có core `common/receiver_gain_compensation.py`,
+  nhận mọi timing/hệ số/cờ tường minh, dùng ở cả default và reference DCE.
+  Cờ mặc định từ AUX_PP1 `commonProcParams/correctRxVariationFlag` (S4: true),
+  hệ số AUX_INS S4/RX V, timing L0. **`calculate_gain` trả power GV;
+  complex raw phải chia `sqrt(GV)` theo Eq. 9-16**, không chia GV.
+  Đã mở trực tiếp PDF trang 126–127 để kiểm tra căn bị mất khi pdftotext.
+  Kết quả reference/audit/RRF trước sửa lỗi dùng nhầm mẫu số; giữ lịch sử
+  nhưng phải xem [báo cáo RX mới](docs/sentinel1_receiver_gain_compensation.md).
+  CLI `--no-correct-rx-variation` cho ablation, không đổi mặc định theo RMSE.
 - `references/` chứa **tài liệu tham khảo thuật toán**. Tại lần khảo sát
   20/10/2026, thư mục chỉ có
   `ESA2022_Sentinel-1 Level 1 Detailed Algorithm Definition_bookmarked.pdf`:
@@ -222,6 +231,8 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
     `estimate_iq_bias` giữ tương thích notebook S6, `apply` là operator chung.
   - `common/raw_data_analysis.py` — thống kê streaming §4.1 và chọn tham số
     correction với cờ/predefined values nhận tường minh từ caller.
+  - `common/receiver_gain_compensation.py` — power GV theo §9.2.3;
+    demo chia căn GV sau I/Q, trước PG/range compression; tính lại theo SWST mỗi chunk.
   - `range_processing/` — `range_reference_function`, `swst_bias`, `dependent_gain`.
   - `azimuth_pre_processing/range/compression.py` — range compression
     (`compress`, `zero_pad`, `forward_fft`, `multiply_reference_function`,
@@ -289,12 +300,12 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy raw correction ngày 21/10/2026: 86 test, 80 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy receiver correction ngày 21/10/2026: 100 test, 94 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
-  15 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
+  16 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  20 test `test/test_raw_data_analysis.py` và 10 test
+  23 test `test/test_raw_data_analysis.py`, 10 test receiver compensation và 10 test
   `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.
 - New pure-processing functions should get a `test_*` unittest; keep `np.testing.assert_*` for array comparisons.
