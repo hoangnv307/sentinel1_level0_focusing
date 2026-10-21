@@ -186,7 +186,10 @@ def main():
         begin = time.monotonic()
         with TemporaryDirectory(prefix="audit-", dir=args.output) as directory:
             try:
-                segments, pri, rate, diagnostics = demo.compress_echoes(level0, aux, directory, correction)
+                segments, pri, rate, diagnostics = demo.compress_echoes(
+                    level0, aux, directory, correction,
+                    correct_rx_variation=False if name == "no_rx" else None,
+                )
             except ValueError as error:
                 # Bỏ delay guard có thể mở rộng ROI ra ngoài LUT; không ngoại suy để ép case chạy.
                 if name != "no_delay" or "Range support nằm ngoài bank EAP" not in str(error):

@@ -5,6 +5,7 @@ from astropy.time import Time
 from scipy.interpolate import interp1d
 
 from ..range_processing.range_reference_function import from_coefficients
+from ..common.receiver_gain_compensation import calculate_gain
 
 
 PRODUCT_SPECIFICATION = (
@@ -65,13 +66,11 @@ class ReferenceInput:
             raise ValueError("Demo chưa tái hiện RFI mitigation của L1.")
         if not _flag(processing, "rawDataAnalysisUsed"):
             raise ValueError("L1 không dùng raw-data analysis để lấy I/Q bias.")
-        if auxiliary["correct_iq_gain"] or auxiliary["correct_iq_quadrature"]:
-            raise ValueError("Demo S1 chỉ hỗ trợ bias; gain/quadrature correction phải tắt.")
         analysis = _single(annotation.findall("generalAnnotation/rawDataAnalysisList/rawDataAnalysis"), "raw analysis")
         self.bias = complex(
             float(analysis.findtext("support/iBiasUsedForCorrection")),
             float(analysis.findtext("support/qBiasUsedForCorrection")),
-        ) if auxiliary["correct_iq_bias"] else 0j
+        )
         self.time_offset_s = float(annotation.findtext("imageAnnotation/imageInformation/zeroDopMinusAcqTime"))
         info = _single([
             e for e in annotation.findall("generalAnnotation/replicaInformationList/replicaInformation")
@@ -102,7 +101,8 @@ class ReferenceInput:
         self.pg_annotated = pg_amplitude * np.exp(1j * pg_phase)
         # Product Specification Table 6-57: annotation chứa 1/PG, không phải PG correction.
         self.pg_corrections = self.pg_annotated[0] / self.pg_annotated
-        self.rx_enabled = _flag(processing, "rxVariationCorrectionApplied")
+        self.rx_enabled = auxiliary["correct_rx_variation"]
+        self.rx_enabled_annotation = _flag(processing, "rxVariationCorrectionApplied")
         self.rx_trend = np.asarray(auxiliary["rx_gain_trend"], dtype=float)
         self.rx_overshoot = np.asarray(auxiliary["rx_gain_overshoot"], dtype=float)
         if self.rx_trend.shape != (8,) or self.rx_overshoot.shape != (5,):
@@ -130,22 +130,13 @@ class ReferenceInput:
             raise ValueError("Hiệu chỉnh tham chiếu chứa scalar không hợp lệ.")
 
     def receiver_gain(self, n_samples, sample_rate_hz, swst_s, pulse_length_s, suppressed_s):
-        """DAD Figure 9-2: t_RX ở sau suppressed samples, thời gian tính bằng µs."""
-        if not self.rx_enabled:
-            return np.ones(n_samples)
-        ts = np.arange(n_samples) / sample_rate_hz * 1e6
-        t1 = ts + (swst_s + suppressed_s - pulse_length_s) * 1e6
-        p, q = self.rx_trend[:5], self.rx_trend[5:]
-        denominator = np.polynomial.polynomial.polyval(t1, q)
-        if np.any(denominator == 0):
-            raise ValueError("Receiver gain có mẫu số bằng 0.")
-        trend = np.polynomial.polynomial.polyval(t1, p) / denominator
-        a, b, c, d, phi = self.rx_overshoot
-        overshoot = a * np.exp(-b * ts) * np.sin(d * ts + phi) + c
-        gain = 10.0 ** ((trend + overshoot) / 10.0)
-        if not np.isfinite(gain).all() or np.any(gain <= 0):
-            raise ValueError("Receiver gain không hữu hạn hoặc không dương.")
-        return gain
+        """Power GV (§9.2.3); complex samples require division by sqrt(GV)."""
+        return calculate_gain(
+            n_samples, sample_rate_hz=sample_rate_hz, swst_s=swst_s,
+            pulse_length_s=pulse_length_s, suppressed_s=suppressed_s,
+            gain_trend_coefficients=self.rx_trend, gain_overshoot_coefficients=self.rx_overshoot,
+            enabled=self.rx_enabled,
+        )
 
     def pg_gain(self, acquisition_times_s):
         """Nội/ngoại suy correction complex, không nội suy phase đã wrap (§9.4)."""
@@ -186,6 +177,8 @@ class ReferenceInput:
             "product_specification": PRODUCT_SPECIFICATION,
             "iq_bias": [self.bias.real, self.bias.imag],
             "rx_variation_applied": self.rx_enabled,
+            "rx_variation_annotated_l1": self.rx_enabled_annotation,
+            "rx_variation_flag_source": "AUX_PP1 commonProcParams/correctRxVariationFlag",
             "rx_gain_trend": self.rx_trend.tolist(), "rx_gain_overshoot": self.rx_overshoot.tolist(),
             "replica_amplitude_coefficients": self.amplitude.tolist(),
             "replica_phase_coefficients_cycles": self.phase.tolist(),
@@ -201,5 +194,5 @@ class ReferenceInput:
             "pg_absolute_scale_recovered": False,
             "eap_applied": self.eap_enabled, "eap_times_gps_s": self.pattern_times.tolist(),
             "range_spreading_loss_applied": self.rsl_enabled, "reference_range_m": self.reference_range_m,
-            "not_applied": ["I/Q gain/quadrature (cờ AUX tắt)", "Hamming/AAP (post-processing)", "noise subtraction (không áp cho complex SLC)", "RFI mitigation (L1 Never)"],
+            "not_applied": ["Hamming/AAP (post-processing)", "noise subtraction (không áp cho complex SLC)", "RFI mitigation (L1 Never)"],
         }

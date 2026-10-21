@@ -115,6 +115,7 @@ class Sentinel1DceDemoTest(unittest.TestCase):
             field(pattern, "elevationPattern", "0 9 0 9 0 9")
         auxiliary = {
             "correct_iq_bias": True, "correct_iq_gain": False, "correct_iq_quadrature": False,
+            "correct_rx_variation": True,
             "rx_gain_trend": [10, 0, 0, 0, 0, 1, 0, 0],
             "rx_gain_overshoot": [0, 0, 0, 0, 0],
             "nominal_amplitude_coefficients": [1, 0, 0, 0],
@@ -126,8 +127,8 @@ class Sentinel1DceDemoTest(unittest.TestCase):
     def test_precomputed_bias_receiver_and_inverse_pg_recover_known_tone(self):
         correction = self.reference_input()
         eta = np.asarray(self.segments[0].azimuth_times_s)
-        receiver = correction.receiver_gain(64, self.rate, 90e-6, 50e-6, 1e-6)
-        np.testing.assert_allclose(receiver, 10)
+        receiver = np.sqrt(correction.receiver_gain(64, self.rate, 90e-6, 50e-6, 1e-6))
+        np.testing.assert_allclose(receiver, np.sqrt(10))
         np.testing.assert_allclose(correction.pg_corrections, [1, 0.5 * np.exp(-1j * np.pi / 4)])
         instrument_gain = 1 / correction.pg_gain(eta)
         tone = np.exp(2j * np.pi * 7 * np.arange(eta.size) * self.pri)
@@ -175,6 +176,7 @@ class Sentinel1DceDemoTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Không đủ hai PG valid"):
             ReferenceInput(self.reference, {
                 "correct_iq_bias": True, "correct_iq_gain": False, "correct_iq_quadrature": False,
+                "correct_rx_variation": True,
                 "rx_gain_trend": correction.rx_trend, "rx_gain_overshoot": correction.rx_overshoot,
                 "nominal_amplitude_coefficients": correction.amplitude,
                 "nominal_phase_coefficients_cycles": correction.phase,
@@ -188,6 +190,19 @@ class Sentinel1DceDemoTest(unittest.TestCase):
         rebuilt = ReferenceInput(self.reference, self.auxiliary)
         np.testing.assert_array_equal(rebuilt.range_reference(self.rate, 128 / self.rate, 1024), expected)
         self.assertEqual(rebuilt.annotated_phase[1], 99999)
+
+    def test_reference_accepts_iq_flags_and_rx_configuration_is_independent_of_l1(self):
+        self.reference_input()
+        self.reference.find("imageAnnotation/processingInformation/rxVariationCorrectionApplied").text = "false"
+        self.auxiliary.update(correct_iq_gain=True, correct_iq_quadrature=True, correct_iq_bias=False)
+        reference = ReferenceInput(self.reference, self.auxiliary)
+        self.assertTrue(reference.rx_enabled)
+        self.assertFalse(reference.rx_enabled_annotation)
+        self.assertEqual(reference.bias, .25-.125j)
+        np.testing.assert_allclose(reference.receiver_gain(3, self.rate, 90e-6, 50e-6, 1e-6), 10.)
+        self.auxiliary["correct_rx_variation"] = False
+        reference = ReferenceInput(self.reference, self.auxiliary)
+        np.testing.assert_array_equal(reference.receiver_gain(3, self.rate, 90e-6, 50e-6, 1e-6), np.ones(3))
 
     def test_candidate_spectra_preserve_peak_coordinate_energy_and_delay(self):
         correction = self.reference_input()

@@ -16,6 +16,7 @@ from sentinel1decoder.enums import RxChannelId, SignalType
 from sentinel1_processing.azimuth_pre_processing.range import compression
 from sentinel1_processing.common.raw_data_analysis import analyze_batches, correction_parameters
 from sentinel1_processing.common.raw_data_correction import apply as correct_raw_iq
+from sentinel1_processing.common.receiver_gain_compensation import calculate_gain
 from sentinel1_processing.doppler_centroid import estimation, geometry
 from sentinel1_processing.range_processing.swst_bias import correct
 from sentinel1_processing.utils.dce_reference_input import ReferenceInput
@@ -67,7 +68,8 @@ def read_auxiliary(product):
     flags = {}
     for name, field in (("correct_iq_bias", "correctIQBiasFlag"),
                         ("correct_iq_gain", "correctIQGainImbalanceFlag"),
-                        ("correct_iq_quadrature", "correctIQOrthogonalityFlag")):
+                        ("correct_iq_quadrature", "correctIQOrthogonalityFlag"),
+                        ("correct_rx_variation", "correctRxVariationFlag")):
         value = pp1.findtext(f"commonProcParams/{field}")
         if value not in ("true", "false"):
             raise ValueError(f"Thiếu cờ cấu hình {field}.")
@@ -168,6 +170,7 @@ def compress_echoes(
     correct_iq_bias=None, correct_iq_gain=None, correct_iq_quadrature=None,
     predefined_i_bias=None, predefined_q_bias=None,
     predefined_gain_imbalance=None, predefined_quadrature_rad=None,
+    correct_rx_variation=None,
 ):
     """Decode/compress theo batch vào memmap; không giữ toàn raw scene trong RAM."""
     if not isinstance(batch_lines, (int, np.integer)) or isinstance(batch_lines, bool) or batch_lines <= 0:
@@ -206,6 +209,7 @@ def compress_echoes(
     )
     used = parameters["applied_parameters"]
     bias = complex(used["i_bias"], used["q_bias"])
+    rx_enabled = aux["correct_rx_variation"] if correct_rx_variation is None else correct_rx_variation
     constant_fields = [
         "PRI", "Range Decimation", "Tx Pulse Length", "Tx Ramp Rate",
         "Tx Pulse Start Frequency", "Rank", "Swath Number", "Rx Channel ID",
@@ -251,14 +255,16 @@ def compress_echoes(
             shape=(len(metadata), n_valid),
         )
         raw = decoder.decode_packets(metadata.iloc[:batch_lines])
-        reference = bank = rx_gain = None
+        rx_gain = calculate_gain(
+            n_range, sample_rate_hz=sample_rate, swst_s=float(metadata["SWST"].iloc[0]),
+            pulse_length_s=float(first["Tx Pulse Length"]), suppressed_s=suppressed_time,
+            gain_trend_coefficients=aux.get("rx_gain_trend"),
+            gain_overshoot_coefficients=aux.get("rx_gain_overshoot"), enabled=rx_enabled,
+        )
+        reference = bank = None
         if reference_input is not None:
             fft_length = 1 << (n_range + pulse_samples - 2).bit_length()
             reference = reference_input.range_reference(sample_rate, float(first["Tx Pulse Length"]), fft_length)
-            rx_gain = reference_input.receiver_gain(
-                n_range, sample_rate, float(metadata["SWST"].iloc[0]),
-                float(first["Tx Pulse Length"]), suppressed_time,
-            )
             bank = reference_input.range_gain_bank(tau[:stop_sample] + shift)
         print(f"Chunk {chunk}: {len(metadata)} echo × {n_range} mẫu, I/Q bias={bias}", flush=True)
         for start in range(0, len(metadata), batch_lines):
@@ -268,9 +274,14 @@ def compress_echoes(
             if raw.shape != (stop - start, n_range) or not np.isfinite(raw).all():
                 raise ValueError(f"Chunk {chunk}: dữ liệu decode không hợp lệ.")
             raw = correct_raw_iq(raw, **used, **flags)
-            if reference_input is not None:
-                raw /= rx_gain[None, :]
-                raw *= reference_input.pg_gain(eta[start:stop])[:, None]
+            with np.errstate(over="ignore", invalid="ignore"):
+                if rx_enabled:
+                    # Eq. 9-16 uses amplitude sqrt(GV), not the power gain GV.
+                    raw /= np.sqrt(rx_gain)[None, :]
+                if reference_input is not None:
+                    raw *= reference_input.pg_gain(eta[start:stop])[:, None]
+            if not np.isfinite(raw).all():
+                raise ValueError(f"Chunk {chunk}: dữ liệu sau receiver/PG correction không hữu hạn.")
             _, range_times = compression.compress(
                 raw, tau, sample_rate_hz=sample_rate,
                 pulse_start_frequency_hz=float(first["Tx Pulse Start Frequency"]),
@@ -294,6 +305,18 @@ def compress_echoes(
             "iq_analysis_lines": raw_analysis["line_count"] if raw_analysis is not None else 0,
             "raw_data_analysis": raw_analysis if chunk == chunks[0][0] else None,
             "raw_correction_parameters": parameters,
+            "receiver_compensation": {
+                "enabled": bool(rx_enabled),
+                "flag_source": "AUX_PP1 commonProcParams/correctRxVariationFlag" if correct_rx_variation is None else "explicit override",
+                "coefficients_source": "AUX_INS S4/RX V gainTrendCoefficients/gainOvershootCoefficients",
+                "swst_downlink_s": float(metadata["SWST"].iloc[0]),
+                "pulse_length_s": float(first["Tx Pulse Length"]), "suppressed_time_s": suppressed_time,
+                "delta_from_tx_end_s": float(metadata["SWST"].iloc[0]) + suppressed_time - float(first["Tx Pulse Length"]),
+                "power_gain_min": float(rx_gain.min()), "power_gain_max": float(rx_gain.max()),
+                "power_gain_first": float(rx_gain[0]), "power_gain_last": float(rx_gain[-1]),
+                "amplitude_divisor_min": float(np.sqrt(rx_gain.min())),
+                "amplitude_divisor_max": float(np.sqrt(rx_gain.max())),
+            },
             "fractional_range_shift_s": shift,
         })
     return segments, pri, sample_rate, diagnostics
@@ -432,6 +455,8 @@ def main():
     for name in ("i-bias", "q-bias", "gain-imbalance", "quadrature-rad"):
         parser.add_argument(f"--predefined-{name}", type=float, default=None,
                             help="Statistic tường minh thay số đo; quadrature tính bằng radians.")
+    parser.add_argument("--correct-rx-variation", action=argparse.BooleanOptionalAction, default=None,
+                        help="Ghi đè receiver gain compensation; mặc định theo AUX_PP1.")
     parser.add_argument("--l0-raw-analysis", action="store_true",
                         help="Thay bias L1 bằng raw analysis L0 khi dùng --l1-input-corrections.")
     parser.add_argument(
@@ -466,6 +491,7 @@ def main():
             raw_analysis=raw_analysis if reference_input is None or args.l0_raw_analysis else None,
             batch_lines=args.batch_lines,
             **correction_inputs,
+            correct_rx_variation=args.correct_rx_variation,
         )
         corrected_analysis = analyze_echoes(
             level0, **raw_analysis["selection"], iq_correction=diagnostics[0]["raw_correction_parameters"],
@@ -495,7 +521,10 @@ def main():
             "raw_data_analysis": raw_analysis,
             "post_iq_correction_analysis": corrected_analysis,
             "iq_correction_overrides": correction_inputs,
-            "input_corrections": {**(reference_input.summary() if reference_input else {"source": "L0 raw analysis + nominal chirp từ header"}),
+            "receiver_compensation_override": args.correct_rx_variation,
+            "input_corrections": {**(reference_input.summary() if reference_input else {"source": "L0 raw analysis + nominal chirp từ header + receiver compensation L0/AUX"}),
+                                  "rx_variation_applied": diagnostics[0]["receiver_compensation"]["enabled"],
+                                  "rx_variation_flag_source": diagnostics[0]["receiver_compensation"]["flag_source"],
                                   "iq_bias_reference_l1": None if reference_input is None else [reference_input.bias.real, reference_input.bias.imag],
                                   "iq_bias": diagnostics[0]["iq_bias"],
                                   "iq_bias_actually_applied": diagnostics[0]["iq_bias"],
@@ -508,7 +537,7 @@ def main():
                     "L1 input corrections không còn là kiểm chứng L0 độc lập với L1.",
                     "Bỏ mép xa thiếu support khi advance hardware delay; Fine DC L1 nội suy tới tâm block mới để so sánh.",
                     "RRF nominal theo polynomial/delay chưa chứng minh tái tạo chính xác spectrum Extended Tapered của IPF.",
-                ] if reference_input else ["Demo chưa áp PG drift, receiver variation, EAP/RSL và RFI mitigation."]),
+                ] if reference_input else ["Demo chưa áp PG drift, EAP/RSL và RFI mitigation."]),
                 "Geometry dùng ephemeris L0 và ellipsoid, không dùng AUX_RESORB/DEM hay orbit L1.",
                 "L1 không xác định duy nhất range window/weighting, unwrap FFT hay ngưỡng outlier.",
             ],

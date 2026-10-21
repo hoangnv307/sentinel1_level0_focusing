@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree as ET
 
 import numpy as np
 import pandas as pd
@@ -190,7 +191,8 @@ class RawDataSelectionTest(unittest.TestCase):
                 demo.analyze_echoes(self.level0, **self.config)
 
     def test_dce_uses_one_l0_bias_across_chunks_and_obeys_aux_flag(self):
-        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False, swst_bias_s=0.)
+        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
         with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
             analysis = demo.analyze_echoes(self.level0, **self.config)
             _, _, _, diagnostics = demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis, batch_lines=2)
@@ -201,14 +203,15 @@ class RawDataSelectionTest(unittest.TestCase):
             self.assertEqual([d["iq_bias"] for d in disabled], [[0., 0.], [0., 0.]])
 
     def test_dce_applies_predefined_iq_before_receiver_pg_and_range_compression(self):
-        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False, swst_bias_s=0.)
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=True, swst_bias_s=0.,
+                   rx_gain_trend=[10*np.log10(4), 0, 0, 0, 0, 1, 0, 0], rx_gain_overshoot=[0]*5)
         predefined = dict(predefined_i_bias=.5, predefined_q_bias=-.25,
                           predefined_gain_imbalance=1.5, predefined_quadrature_rad=.2)
         flags = dict(correct_iq_bias=True, correct_iq_gain=True, correct_iq_quadrature=True)
         reference = SimpleNamespace(
             bias=100+200j, internal_delay_s=0.,
             range_reference=lambda rate, pulse, length: np.ones(length, np.complex64),
-            receiver_gain=lambda n, *args: np.full(n, 2.),
             pg_gain=lambda eta: np.full(len(eta), 3.),
             range_gain_bank=lambda tau: None,
             apply_range_gain=lambda *args: None,
@@ -245,11 +248,11 @@ class RawDataSelectionTest(unittest.TestCase):
         self.assertEqual(after["sources"], before["sources"])
 
     def test_reference_mode_keeps_l1_bias_when_optional_gain_needs_l0_statistics(self):
-        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False, swst_bias_s=0.)
+        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
         reference = SimpleNamespace(
             bias=.8-.6j, internal_delay_s=0.,
             range_reference=lambda rate, pulse, length: np.ones(length, np.complex64),
-            receiver_gain=lambda n, *args: np.ones(n),
             pg_gain=lambda eta: np.ones(len(eta)), range_gain_bank=lambda tau: None,
             apply_range_gain=lambda *args: None,
         )
@@ -262,6 +265,97 @@ class RawDataSelectionTest(unittest.TestCase):
         self.assertEqual(selected["sources"]["gain_imbalance"], "measured")
         self.assertEqual(selected["sources"]["i_bias"], "predefined")
         self.assertEqual(diagnostics[0]["iq_bias_source"], "L1 support/*BiasUsedForCorrection")
+
+    def test_receiver_compensation_uses_each_chunk_swst_and_obeys_aux_override_and_batch_size(self):
+        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=True, swst_bias_s=0.,
+                   rx_gain_trend=[0, .1, 0, 0, 0, 1, 0, 0], rx_gain_overshoot=[0]*5)
+        fs = sentinel1decoder.utilities.range_dec_to_sample_rate(RangeDecimation.RGDEC_5)
+        # Integer sample offset isolates receiver timing from fractional range alignment.
+        self.frames[14]["SWST"] = 500/fs
+        pulse = float(self.frames[13]["Tx Pulse Length"].iloc[0])
+        n_tx = int(np.ceil(pulse*fs))
+        before = self.raw.copy()
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            analysis = demo.analyze_echoes(self.level0, **self.config)
+            baseline = None
+            for aux_enabled, override, batch_size in ((True, None, 2), (True, None, 3),
+                                                       (True, False, 2), (False, True, 2)):
+                aux["correct_rx_variation"] = aux_enabled
+                segments, _, _, diagnostics = demo.compress_echoes(
+                    self.level0, aux, tmp, raw_analysis=analysis, batch_lines=batch_size,
+                    correct_rx_variation=override)
+                enabled = aux_enabled if override is None else override
+                corrected = []
+                for chunk, rows in ((13, slice(0, 4)), (14, slice(4, 8))):
+                    swst = float(self.frames[chunk]["SWST"].iloc[0])
+                    t_us = (np.arange(8)/fs + swst + 320/(8*sentinel1decoder.constants.F_REF) - pulse)*1e6
+                    gain = 10**(.1*t_us/10) if enabled else np.ones(8)
+                    corrected.extend((self.raw[rows]-(.25-.125j))/np.sqrt(gain))
+                expected = np.array([np.convolve(row, np.ones(n_tx)/np.sqrt(n_tx))[n_tx-1:7]
+                                     for row in corrected])
+                actual = np.concatenate([s.range_compressed for s in segments])
+                np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=3e-6)
+                self.assertEqual([d["receiver_compensation"]["enabled"] for d in diagnostics], [enabled]*2)
+                self.assertEqual(diagnostics[0]["receiver_compensation"]["flag_source"],
+                                 "explicit override" if override is not None else "AUX_PP1 commonProcParams/correctRxVariationFlag")
+                if enabled:
+                    if baseline is None:
+                        baseline = actual.copy()
+                    else:
+                        np.testing.assert_array_equal(actual, baseline)
+                    self.assertNotEqual(diagnostics[0]["receiver_compensation"]["power_gain_first"],
+                                        diagnostics[1]["receiver_compensation"]["power_gain_first"])
+        np.testing.assert_array_equal(self.raw, before)
+
+    def test_auxiliary_receiver_flag_is_required_and_selected_from_matching_product(self):
+        instrument = ET.fromstring('''<auxiliaryInstrument><radarFrequency>5405000000</radarFrequency>
+          <internalCalibrationParamsList><internalCalibrationParams>
+            <swath>S4</swath><polarisation>VV</polarisation><swstBias>0</swstBias>
+          </internalCalibrationParams></internalCalibrationParamsList>
+          <swathParamsList><swathParams><swath>S4</swath>
+            <rxVariationCorrectionParamsList><rxVariationCorrectionParams><rxPolarisation>V</rxPolarisation>
+              <gainTrendCoefficients>0 0 0 0 0 1 0 0</gainTrendCoefficients>
+              <gainOvershootCoefficients>0 0 0 0 0</gainOvershootCoefficients>
+            </rxVariationCorrectionParams></rxVariationCorrectionParamsList>
+            <pulseParamsList><pulseParams><polarisation>VV</polarisation>
+              <amplitudeCoefficients>1 0 0 0</amplitudeCoefficients>
+              <phaseCoefficients>0 0 0 0</phaseCoefficients>
+            </pulseParams></pulseParamsList>
+          </swathParams></swathParamsList></auxiliaryInstrument>''')
+        processor = ET.fromstring('''<l1AuxiliaryProcessorParameters><productList>
+          <product><productId>WRONG</productId></product><product><productId>SM_SL1__1</productId>
+            <dcProcParams><dcMethod>Data Analysis</dcMethod><dcInputData>Range Compressed</dcInputData>
+              <dcRmsErrorThreshold>20</dcRmsErrorThreshold></dcProcParams>
+            <commonProcParams><correctIQBiasFlag>true</correctIQBiasFlag>
+              <correctIQGainImbalanceFlag>false</correctIQGainImbalanceFlag>
+              <correctIQOrthogonalityFlag>false</correctIQOrthogonalityFlag>
+              <correctRxVariationFlag>true</correctRxVariationFlag>
+            </commonProcParams>
+          </product></productList></l1AuxiliaryProcessorParameters>''')
+        product = Mock()
+        product.glob.side_effect = lambda pattern: [Path("ins.xml" if "ins" in pattern else "pp1.xml")]
+        with patch.object(demo.ET, "parse", side_effect=lambda path: ET.ElementTree(
+                instrument if path.name == "ins.xml" else processor)):
+            flag = processor.find("productList/product[productId='SM_SL1__1']/commonProcParams/correctRxVariationFlag")
+            for value, expected in (("true", True), ("false", False)):
+                flag.text = value
+                self.assertIs(demo.read_auxiliary(product)["correct_rx_variation"], expected)
+            for value in (None, "1", "bad"):
+                flag.text = value
+                with self.assertRaisesRegex(ValueError, "correctRxVariationFlag"):
+                    demo.read_auxiliary(product)
+
+    def test_receiver_overflow_is_rejected_before_range_fft(self):
+        self.raw = self.raw.astype(np.complex64)
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=True, swst_bias_s=0.,
+                   rx_gain_trend=[-3000, 0, 0, 0, 0, 1, 0, 0], rx_gain_overshoot=[0]*5)
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            analysis = demo.analyze_echoes(self.level0, **self.config)
+            with patch.object(demo.compression, "compress", side_effect=AssertionError("Không được tới FFT")):
+                with self.assertRaisesRegex(ValueError, "sau receiver/PG correction không hữu hạn"):
+                    demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis, batch_lines=2)
 
 
 PRODUCT_RAW = Path.home()/"sar_data/focusing_data/product_1/level-0/s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat"
