@@ -1,5 +1,9 @@
 # Kiểm định reference và chuẩn hóa PG — S1A/S4/VV
 
+Sau báo cáo này đã [nối internal delay L0 vào RRF](sentinel1_internal_delay.md).
+Các lệnh tái chạy bên dưới ghim nguồn delay cũ để tái lập đúng baseline;
+CLI hiện mặc định delay L0.
+
 Thực hiện ngày 21/10/2026, tiếp nối snapshot
 [kiểm kê calibration](sentinel1_pg_calibration.md). Tài liệu này mô tả phiên bản
 hiện hành; các con số của snapshot cũ là baseline trước sửa reference.
@@ -200,11 +204,13 @@ MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
   workflows/sentinel-1/estimate_doppler_centroid.py --l0-pg-drift \
+  --internal-delay-source none \
   --output output/sentinel-1/pg_normalization/dce_l0_pg
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
   workflows/sentinel-1/estimate_doppler_centroid.py \
   --l1-input-corrections --l0-raw-analysis --l0-pg-drift \
+  --internal-delay-source l1 \
   --output output/sentinel-1/pg_normalization/dce_reference_l0_pg
 ```
 

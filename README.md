@@ -167,10 +167,14 @@ Receiver gain compensation §9.2.3 hiện chạy độc lập từ L0/AUX theo
 đối chiếu đúng thang `PGref/PGcal` với model AUX. Giữ opt-in vì chưa kiểm
 chứng radiometry toàn pipeline/IPF. Kiểm kê riêng:
 `python workflows/sentinel-1/analyze_calibration.py` với `MPLBACKEND=Agg`.
+CLI S4 hiện [bù internal delay đo từ PG L0](docs/sentinel1_internal_delay.md)
+mặc định (`--internal-delay-source l0`), khoảng `4,333088620e-7 s`.
+Chọn `none` để tắt hoặc `l1` cùng `--l1-input-corrections` để đối chứng.
+`--minimum-far-range-discard-samples 25` giữ chung ROI khi so các nguồn delay.
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.
 
-Kết quả chạy trên toàn bộ 16.500 echo của `product_1`:
+Baseline lịch sử trước khi bật delay L0 trên toàn bộ 16.500 echo của `product_1`:
 
 | Block (0-based, stop exclusive) | RMS fit | RMSE Fine DC so với L1 | RMSE polynomial so với L1 |
 |---|---|---|---|
@@ -199,8 +203,8 @@ giữ nguyên kết quả demo cơ bản. Các tham số và phép biến đổi
 | I/Q bias | L1 `rawDataAnalysis/support/*BiasUsedForCorrection`: trừ `0,2893930077552795 + j·0,3621337115764618` khỏi echo trước mọi gain correction. |
 | Receiver variation | Hệ số S4/RX V trong AUX_INS, cờ từ AUX_PP1; DAD §9.2.3, trend tính từ cuối TX pulse, overshoot từ `t_RX` sau suppressed samples; đơn vị µs, chia `sqrt(GV)` theo Eq. 9-16. |
 | PG drift tương đối | Hai node inverse-PG trong L1 đã mang chiều correction; chuẩn hóa trực tiếp `value(t)/value(first)` rồi nội/ngoại suy complex §9.4. `--l0-pg-drift` thay node L1 bằng kết quả calibration L0/AUX. |
-| Range replica | Nominal amplitude/phase S4/VV từ AUX_INS (cập nhật 21/10/2026); L1 `referenceReplica/gain` và delay tham chiếu vẫn được giữ. Builder dùng whitening và normalization theo Parseval; coefficient L1 chỉ để đối chiếu độ làm tròn. Không thêm Hamming. |
-| Internal delay | L1 `referenceReplica/timeDelay=4,333092e-7 s`: advance output của matched filter để bù positive hardware delay; tone/chirp test kiểm tra chiều dịch. |
+| Range replica | Nominal amplitude/phase S4/VV từ AUX_INS (cập nhật 21/10/2026); vẫn giữ L1 `referenceReplica/gain` ở reference mode. Builder dùng whitening và normalization theo Parseval; coefficient L1 chỉ để đối chiếu độ làm tròn. Không thêm Hamming. |
+| Internal delay | Mặc định mean từ PG L0/AUX `4,333088620e-7 s`; có thể chọn L1 `4,333092e-7 s` để đối chứng. Phase ramp advance một lần trong RRF; JSON ghi nguồn và delay thực sự áp dụng. |
 | EAP | Bảy vector L1 `antennaPattern`, mỗi vector 574 giá trị complex theo thứ tự I/Q; nội suy theo range, căn magnitude giữ nguyên phase rồi nghịch đảo, sau đó nội suy correction theo thời gian (§9.5). |
 | Range spreading loss | Nhân amplitude `(R/800000 m)^(3/2)` theo DAD §9.6; reference range đọc từ annotation. |
 

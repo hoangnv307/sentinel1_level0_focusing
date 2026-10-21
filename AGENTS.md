@@ -67,6 +67,15 @@ cho Sentinel-1.
   với sub-swath thứ 4 của TOPSAR. AUX_PP1 3.15 dùng amplitude tuyến tính,
   phase radian theo Aux Spec 3/16; XSD 3.14 đi kèm còn ghi dB/độ đã lỗi thời.
   Node PG dùng acquisition time, không lấy timestamp L1 làm input.
+  [Internal delay từ L0](docs/sentinel1_internal_delay.md) đã được nối vào RRF:
+  CLI S4 mặc định `--internal-delay-source l0`, lấy mean từ peak PG hợp lệ
+  (riêng với PG amplitude/phase QC). Dùng `l1` cùng reference mode hoặc
+  `none` để ablation; không fallback âm thầm sang L1/AUX timeDelay.
+  Positive hardware delay được advance bằng `exp(+2j*pi*f*delay)` một lần;
+  không cộng delay lần nữa vào range axis hoặc SWST bias.
+  Guard mép xa xét tổng delay + fractional alignment; có minimum guard để
+  chạy cùng ROI. Low-level `compress_echoes(..., internal_delay_s=None)`
+  giữ hành vi cũ cho audit scripts; CLI luôn truyền delay tường minh.
   **PG annotation đã là inverse instrument response**; reference chuẩn hóa
   `value(t)/value(first)`, không nghịch đảo thêm lần nữa. Các report reference
   trước sửa chiều PG là lịch sử; test phải dùng đáp ứng thiết bị biết trước.
@@ -164,7 +173,7 @@ LUT, timing hoặc kích thước ảnh từ L1 đưa ngược vào pipeline t�
 dùng các hiệu chỉnh input tính sẵn cho demo
 `workflows/sentinel-1/estimate_doppler_centroid.py`. Demo mặc định chỉ suy
 layout/time alignment; bias mặc định đo từ toàn echo L0 hợp lệ, dùng chung
-hai chunk. Cờ `--l1-input-corrections` còn dùng bias, replica gain/delay,
+hai chunk. Cờ `--l1-input-corrections` còn dùng bias, replica gain,
 PG tương đối và bank EAP từ L1; nominal chirp và receiver variation từ AUX_INS, RSL theo
 DAD. DC vẫn đo từ echo L0, geometry từ ephemeris L0; không dùng polynomial
 Doppler L1 thay cho ước lượng. Chế độ này không phải kiểm chứng L0 độc lập
@@ -173,8 +182,9 @@ nguồn, giả định, support và kết quả riêng của từng chế độ.
 Thêm `--l0-raw-analysis` để thay riêng bias L1 bằng bias L0 trong chế độ
 tham chiếu; JSON phải ghi rõ giá trị reference và giá trị thực sự áp dụng.
 `--l0-pg-drift` thay PG L1 bằng provider từ calibration L0/AUX, không nhân
-cả hai. Chế độ này vẫn dùng RRF gain/delay và EAP L1 khi kết hợp reference;
-chỉ default + flag PG là input correction không lấy các giá trị đó từ L1.
+cả hai. Chế độ này vẫn dùng RRF gain và EAP L1 khi kết hợp reference;
+delay mặc định đo từ PG L0, chỉ lấy L1 khi `--internal-delay-source l1`.
+Chỉ default + flag PG là input correction không lấy các giá trị đó từ L1.
 
 ### (3) `auxiliary/` — cấu hình và đặc tính hệ thống
 
@@ -325,12 +335,12 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy normalization PG ngày 21/10/2026: 125 test, 119 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy internal delay ngày 21/10/2026: 132 test, 126 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
-  16 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
+  17 test trong `test/test_sentinel1_dce_demo.py` và 6 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  24 test `test/test_raw_data_analysis.py`, 24 test internal calibration,
+  27 test `test/test_raw_data_analysis.py`, 26 test internal calibration,
   10 test receiver compensation và 10 test
   `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.

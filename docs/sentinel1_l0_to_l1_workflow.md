@@ -265,6 +265,9 @@ Trình tự §4.2.2:
    (§4.2.1.8). Chỉ nội suy giá trị valid. Nếu tỷ lệ invalid vượt ngưỡng hoặc
    cấu hình yêu cầu model, chuyển sang PG model từ AUX_INS.
 7. Tính internal delay trung bình từ PG để dịch image replica/RRF.
+   Đã [tích hợp delay L0 vào CLI S4](sentinel1_internal_delay.md): mean trên
+   các sequence có peak correlation hợp lệ, không lọc theo PG amplitude/phase
+   QC. CLI mặc định nguồn L0; delay và guard/suppression là đầu vào tường minh.
 8. Tạo nominal image chirp từ amplitude/phase coefficient AUX_INS;
    tái dựng/trích image replica nếu cấu hình chọn extracted chirp.
 9. Validate image replica bằng 3-dB width, PSLR, ISLR; discard replica không
