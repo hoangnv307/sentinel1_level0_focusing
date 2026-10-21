@@ -43,8 +43,12 @@ def main():
     if len(ref_times) == len(report["nodes"]):
         report["l1_diagnostic_only"]["aligned_time_residual_s"] = (
             np.array([n["time_gps_s"] for n in report["nodes"]])+offset-ref_times).tolist()
+        inverse = np.array([complex(*n["inverse_pgcal"]) for n in report["nodes"]])
+        report["l1_diagnostic_only"]["inverse_pgcal_amplitude_relative_error"] = (abs(inverse)/abs(values)-1).tolist()
+        report["l1_diagnostic_only"]["inverse_pgcal_phase_error_rad"] = np.angle(inverse/values).tolist()
+        report["l1_diagnostic_only"]["comparison_note"] = "Compare 1/PGcal to annotation without fitting a complex scale; PGref is not in annotation."
     figure, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    axes[0].plot(times-times[0], abs(corrections), "o-", label="L0/AUX, first-replica correlation")
+    axes[0].plot(times-times[0], abs(corrections), "o-", label="L0/AUX, nominal 1/N reference")
     axes[1].plot(times-times[0], np.angle(corrections), "o-", label="L0/AUX")
     axes[0].plot(ref_times-ref_times[0], abs(values/values[0]), "x--", label="L1 inverse-PG, direct normalization")
     axes[1].plot(ref_times-ref_times[0], np.angle(values/values[0]), "x--", label="L1")

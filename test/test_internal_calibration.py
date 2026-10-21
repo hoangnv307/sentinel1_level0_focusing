@@ -1,13 +1,14 @@
 """Calibration/PG: mô hình thuận độc lập, validity và timing từ L0 thật."""
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
 import sentinel1decoder
 
 from sentinel1_processing.pre_processing import internal_calibration as cal
-from sentinel1_processing.utils.pg_calibration_input import analyze_calibration
+from sentinel1_processing.utils.pg_calibration_input import analyze_calibration, read_configuration
 from sentinel1_processing.doppler_centroid.estimation import lag1_accc
 
 
@@ -60,16 +61,82 @@ class InternalCalibrationTest(unittest.TestCase):
     def test_pg_is_inverse_instrument_gain_with_first_valid_replica_reference(self):
         gains = np.array([1., .8*np.exp(.4j), 1.1*np.exp(-.3j)])
         replicas = gains[:, None]*self.signal
-        products, peaks, lags = cal.pg_products(replicas, pg_reference=707.+2j, oversampling_factor=16)
+        products, peaks, lags = cal.pg_products(replicas, reference=self.signal, pg_reference=707.+2j, oversampling_factor=16)
         np.testing.assert_allclose(products/products[0], 1/gains, atol=1e-14)
         np.testing.assert_allclose(peaks, gains*np.vdot(self.signal, self.signal), rtol=1e-14)
         np.testing.assert_allclose(lags, 0., atol=1e-12)
 
     def test_constant_pg_reference_scale_cancels_in_relative_drift(self):
         replicas = np.array([self.signal, self.signal*(.9+.1j)])
-        a, _, _ = cal.pg_products(replicas, pg_reference=1., oversampling_factor=16)
-        b, _, _ = cal.pg_products(replicas, pg_reference=707.+3j, oversampling_factor=16)
+        a, _, _ = cal.pg_products(replicas, reference=self.signal, pg_reference=1., oversampling_factor=16)
+        b, _, _ = cal.pg_products(replicas, reference=self.signal, pg_reference=707.+3j, oversampling_factor=16)
         np.testing.assert_allclose(a/a[0], b/b[0], atol=1e-14)
+
+    def test_nominal_reference_removes_compression_gain_for_different_pulse_lengths_and_padding(self):
+        gain = 813*np.exp(.4j)
+        for count in (31, 64, 129):
+            time = np.arange(count)/1024.
+            transmitted = np.exp(2j*np.pi*(-100*time + .5*500*time**2))
+            nominal = cal.nominal_pg_replica(sample_rate_hz=1024., pulse_length_s=count/1024.,
+                                              start_frequency_hz=-100., ramp_rate_hz_per_s=500.)
+            np.testing.assert_allclose(nominal, transmitted/count)
+            for window in (count+100, 2*(count+100)):
+                raw = np.zeros(window, complex)
+                raw[10:10+count] = gain*transmitted
+                products, peaks, lags = cal.pg_products(raw[None, :], reference=nominal,
+                                                        pg_reference=707., oversampling_factor=16)
+                np.testing.assert_allclose(peaks, [gain], rtol=1e-13)
+                np.testing.assert_allclose(products, [707/gain], rtol=1e-13)
+                np.testing.assert_allclose(lags, [10.], atol=1e-12)
+
+    def test_measured_reference_has_different_units_and_depends_on_its_gain(self):
+        count = len(self.signal)
+        raw = np.array([2*self.signal, 3*self.signal])
+        nominal, _, _ = cal.pg_products(raw, reference=self.signal/count, pg_reference=1., oversampling_factor=16)
+        measured, _, _ = cal.pg_products(raw, reference=raw[0], pg_reference=1., oversampling_factor=16)
+        np.testing.assert_allclose(nominal, [1/2, 1/3])
+        np.testing.assert_allclose(measured, nominal/(2*count))
+
+    def test_fft_zoom_preserves_peak_amplitude_instead_of_scaling_by_oversampling(self):
+        for factor in (8, 16, 32):
+            peak, lag = cal.correlation_peak(3j*self.signal, self.signal/len(self.signal),
+                                             oversampling_factor=factor)
+            np.testing.assert_allclose(peak, 3j, atol=1e-14)
+            self.assertAlmostEqual(lag, 0., places=12)
+
+    def test_nominal_replica_rejects_invalid_header_parameters(self):
+        valid = dict(sample_rate_hz=10., pulse_length_s=.3, start_frequency_hz=-2., ramp_rate_hz_per_s=1.)
+        for field, value in (("sample_rate_hz", 0.), ("pulse_length_s", -1.),
+                              ("start_frequency_hz", np.nan), ("ramp_rate_hz_per_s", [1.])):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                cal.nominal_pg_replica(**{**valid, field: value})
+
+    def test_pg_reference_must_be_explicit_valid_and_fit_the_calibration_window(self):
+        for reference in (np.zeros(64, complex), np.ones(65, complex), np.ones((1, 64), complex)):
+            with self.subTest(shape=reference.shape), self.assertRaises(ValueError):
+                cal.pg_products(self.signal[None, :], reference=reference,
+                                pg_reference=1., oversampling_factor=16)
+
+    def test_pcc_reconstruction_nominal_pg_recovers_known_chain_gain(self):
+        gain = 800*np.exp(.7j)
+        delta = np.eye(1, 64, dtype=complex)[0]
+        paths = [gain*self.signal, 2*delta, 4*delta, 3*delta, 5*delta]
+        pulses = [cal.extract_pulse(np.array([path+1j, -path+1j]), order=[1, 2], method="PCC2")
+                  for path in paths[:4]]
+        pulses.append(cal.extract_pulse(np.array([paths[4]]*3), order=[1, 2, 3], method="Average"))
+        replica = cal.reconstruct_replica(*pulses, denominator_relative_floor=0.)
+        correction, _, _ = cal.pg_products(replica[None, :], reference=self.signal/64,
+                                           pg_reference=707., oversampling_factor=16)
+        np.testing.assert_allclose(correction, [707/(.3*gain)], rtol=1e-14)
+
+    def test_reader_rejects_old_schema_with_ambiguous_threshold_units(self):
+        with TemporaryDirectory() as folder:
+            data = Path(folder)/"auxiliary/fixture/data"
+            data.mkdir(parents=True)
+            (data/"s1a-aux-ins.xml").write_text('<auxiliaryInstrument schemaVersion="3.16"/>')
+            (data/"s1a-aux-pp1.xml").write_text('<l1AuxiliaryProcessorParameters schemaVersion="3.14"/>')
+            with self.assertRaisesRegex(ValueError, "AUX_PP1 3.15/3.16"):
+                read_configuration(folder)
 
     def test_relative_qc_discards_outlier_and_uses_only_valid_nodes(self):
         quality, chosen = cal.validate_pg(np.array([1, 1, 5], complex), np.ones(3, complex), **self.qc)
@@ -121,10 +188,12 @@ class InternalCalibrationTest(unittest.TestCase):
         times = np.arange(256)*.01
         gains = np.array([1., .8*np.exp(.4j)])
         replicas = gains[:, None]*self.signal
-        corrections, _, _ = cal.pg_products(replicas, pg_reference=1., oversampling_factor=16)
+        corrections, _, _ = cal.pg_products(replicas, reference=self.signal, pg_reference=1., oversampling_factor=16)
         correction = cal.interpolate_pg([times[0], times[-1]], corrections/corrections[0], times)
         ideal = np.tile(np.exp(2j*np.pi*7*times)[:, None], (1, 4))
-        raw = ideal/correction[:, None]
+        weight = (times-times[0])/(times[-1]-times[0])
+        instrument_gain = 1/((1-weight)/gains[0]+weight/gains[1])
+        raw = ideal*instrument_gain[:, None]
         corrected = raw*correction[:, None]
         np.testing.assert_allclose(corrected, ideal, atol=1e-15)
         np.testing.assert_allclose(-np.angle(lag1_accc(corrected))/(2*np.pi*.01), 7., atol=1e-12)
@@ -139,7 +208,7 @@ class InternalCalibrationTest(unittest.TestCase):
                 cal.validate_pg(np.ones(2, complex), np.ones(2, complex), **{**self.qc, **override})
         for ref in (None, 0., [1.]):
             with self.subTest(reference=ref), self.assertRaises(ValueError):
-                cal.pg_products(np.array([self.signal]*2), pg_reference=ref, oversampling_factor=16)
+                cal.pg_products(np.array([self.signal]*2), reference=self.signal, pg_reference=ref, oversampling_factor=16)
 
 
 PRODUCT = Path.home()/"sar_data/focusing_data/product_1"
@@ -171,20 +240,35 @@ class RealCalibrationTest(unittest.TestCase):
                     pulses.append((samples[count-1]-samples[count-2])/2)
             tx, rx, epdn, ta, apdn = map(np.fft.fft, pulses)
             replicas.append(np.fft.ifft(tx*rx*ta/(epdn*apdn)))
-        spectrum = np.fft.fft(replicas[1])*np.fft.fft(replicas[0]).conj()
-        frequencies = np.fft.fftfreq(len(spectrum))
-        nyquist = spectrum[len(spectrum)//2]
-        spectrum[len(spectrum)//2] = 0
-        # Independent dense local Fourier evaluation includes the fractional peak.
-        candidates = np.linspace(-.001, .001, 1001)
-        peaks = np.array([(np.sum(spectrum*np.exp(2j*np.pi*frequencies*lag)) +
-                           nyquist*np.cos(np.pi*lag))/len(spectrum) for lag in candidates])
-        peak = peaks[np.argmax(abs(peaks))]
-        oracle = np.vdot(replicas[0], replicas[0])/peak
-        np.testing.assert_allclose(correction, [1., oracle], rtol=1e-6)
+        header = level0.get_acquisition_chunk_metadata(7).iloc[0]
+        rate = 112604166.72
+        count = int(np.ceil(float(header["Tx Pulse Length"])*rate))
+        time = np.arange(count)/rate
+        # Independent commanded chirp; no calibration or L1 amplitude is fitted.
+        nominal = np.exp(2j*np.pi*(float(header["Tx Pulse Start Frequency"])*time +
+                                   .5*float(header["Tx Ramp Rate"])*time**2))/count
+        independent_peaks = []
+        for replica in replicas:
+            spectrum = np.fft.fft(replica)*np.fft.fft(nominal, n=len(replica)).conj()
+            frequencies = np.fft.fftfreq(len(spectrum))
+            nyquist = spectrum[len(spectrum)//2]
+            spectrum[len(spectrum)//2] = 0
+            # Independent dense local Fourier evaluation includes the fractional peak.
+            candidates = np.linspace(48.78, 48.81, 3001)
+            peaks = np.array([(np.sum(spectrum*np.exp(2j*np.pi*frequencies*lag)) +
+                               nyquist*np.cos(np.pi*lag))/len(spectrum) for lag in candidates])
+            independent_peaks.append(peaks[np.argmax(abs(peaks))])
+        peak_first, peak = independent_peaks
+        oracle = peak_first/peak
+        np.testing.assert_allclose(correction, [1., oracle], rtol=2e-5)
+        expected = complex(*report["configuration"]["pg_reference"])/peak
+        np.testing.assert_allclose(complex(*report["nodes"][1]["normalized_pg_correction"]), expected, rtol=2e-5)
+        self.assertTrue(.85 < abs(expected) < .90)
         self.assertGreater(np.angle(correction[-1]), 0)
         self.assertEqual(report["quality"]["valid"], [True, True])
-        self.assertFalse(report["quality"]["absolute_scale_verified"])
+        self.assertTrue(report["quality"]["absolute_scale_verified"])
+        self.assertFalse(report["absolute_radiometric_scale_recovered"])
+        self.assertEqual(report["pg_reference_function"]["sample_count"], 5799)
         self.assertTrue(report["echo_coverage_without_extrapolation"])
         for node in report["nodes"]:
             self.assertTrue(4e-7 < node["internal_delay_diagnostic_s"] < 5e-7)

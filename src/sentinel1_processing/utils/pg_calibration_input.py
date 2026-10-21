@@ -7,7 +7,7 @@ import numpy as np
 import sentinel1decoder
 
 from ..pre_processing.internal_calibration import (
-    extract_pulse, reconstruct_replica, correlation_peak, pg_products, validate_pg,
+    extract_pulse, reconstruct_replica, nominal_pg_replica, pg_products, validate_pg,
 )
 
 
@@ -23,6 +23,9 @@ def read_configuration(product):
         paths.append(str(matches[0]))
         roots.append(ET.parse(matches[0]).getroot())
     ins, pp1 = roots
+    # Bundled 3.14 XSD has stale dB/degrees; this reader supports the 3.15/3.16 contract.
+    if pp1.get("schemaVersion") not in ("3.15", "3.16"):
+        raise ValueError("Cần AUX_PP1 3.15/3.16 để xác định PG amplitude tuyến tính và phase radian.")
     records = [r for r in ins.findall("internalCalibrationParamsList/internalCalibrationParams")
                if r.findtext("swath") == "S4" and r.findtext("polarisation") == "VV"]
     products = [p for p in pp1.findall("productList/product") if p.findtext("productId") == "SM_SL1__1"]
@@ -51,6 +54,7 @@ def read_configuration(product):
     return {"files": paths, "orders": orders, "perform_internal_calibration": flag == "true",
             "pg_source": source, "pg_reference": [reference.real, reference.imag],
             "constant_pg_model": [model[0].real, model[0].imag], "thresholds": thresholds,
+            "pg_threshold_units": {"amplitude": "linear", "phase": "radian", "pp1_schema_version": pp1.get("schemaVersion")},
             "pg_model_interval_s": float(calibration.findtext("pgProductModel/pgModelInterval")),
             "delta_t_guard1_s": float(ins.findtext("deltaTGuard1")),
             "delta_t_suppr_s": float(ins.findtext("deltaTSuppr"))}
@@ -59,8 +63,8 @@ def read_configuration(product):
 def analyze_calibration(level0, product, *, oversampling_factor, denominator_relative_floor):
     """No L1 input; return selected acquisition times, relative PG correction, report.
 
-    Absolute DN/PG scale and inter-swath gain ratio are not recovered here.
-    The opt-in DCE correction is normalized to its first selected node.
+    PGref/PGcal uses the nominal 1/N reference (Calibration Plan 8.1).
+    The opt-in DCE correction remains normalized to its first selected node.
     """
     if not Path(level0.filename).name.startswith("s1a-s4-raw-s-vv-"):
         raise ValueError("Adapter calibration này chỉ hỗ trợ sản phẩm S1A/S4/VV hiện tại.")
@@ -128,7 +132,7 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
         raise ValueError("AUX tắt internal calibration; không tự dựng PG extracted.")
     if len(groups) < 2:
         raise ValueError("Không đủ hai PG calibration sequence.")
-    replicas, node_times, nodes = [], [], []
+    replicas, node_times, nodes, reference, chirp_parameters = [], [], [], None, None
     for group in groups:
         signals = {r["signal_code"]: p for r, _, p in group if p is not None}
         if set(signals) != {8, 9, 10, 11, 12} or len(signals) != sum(p is not None for _, _, p in group):
@@ -142,40 +146,68 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
         replica = reconstruct_replica(*(signals[c] for c in (8, 9, 10, 11, 12)),
                                       denominator_relative_floor=denominator_relative_floor)
         rate = records[0]["sample_rate_hz"]
-        n = int(np.ceil(float(first["Tx Pulse Length"])*rate))
-        t = np.arange(n)/rate
-        nominal = np.exp(2j*np.pi*(float(first["Tx Pulse Start Frequency"])*t +
-                                  .5*float(first["Tx Ramp Rate"])*t*t))/n
-        peak, lag = correlation_peak(replica, nominal, oversampling_factor=oversampling_factor)
+        parameters = dict(sample_rate_hz=rate, pulse_length_s=float(first["Tx Pulse Length"]),
+                          start_frequency_hz=float(first["Tx Pulse Start Frequency"]),
+                          ramp_rate_hz_per_s=float(first["Tx Ramp Rate"]))
+        nominal = nominal_pg_replica(**parameters)
+        if reference is None:
+            reference = nominal
+            chirp_parameters = parameters
+        elif parameters != chirp_parameters:
+            raise ValueError("PG sequences thay đổi nominal chirp; không dùng chung reference khác grid/chirp.")
         node_times.append((records[0]["start_gps_s"]+records[-1]["last_gps_s"])/2)
         replicas.append(replica)
         nodes.append({"chunks": [r["chunk"] for r in records], "time_gps_s": node_times[-1],
-                      "nominal_mean_correlation_peak": [peak.real, peak.imag],
-                      "inverse_nominal_peak_diagnostic": [float((1/peak).real), float((1/peak).imag)],
-                      "nominal_peak_lag_samples": lag, "sample_rate_hz": rate,
-                      "internal_delay_diagnostic_s": lag/rate - (
-                          configuration["delta_t_guard1_s"]-configuration["delta_t_suppr_s"])})
-    products, peaks, lags = pg_products(replicas, pg_reference=complex(*configuration["pg_reference"]),
+                      "sample_rate_hz": rate,
+                      "replica_mean_amplitude_dn": float(np.mean(abs(replica))),
+                      "replica_energy_dn_squared": float(np.vdot(replica, replica).real)})
+    products, peaks, lags = pg_products(replicas, reference=reference,
+                                       pg_reference=complex(*configuration["pg_reference"]),
                                        oversampling_factor=oversampling_factor)
+    legacy, legacy_peaks, _ = pg_products(replicas, reference=replicas[0],
+                                         pg_reference=complex(*configuration["pg_reference"]),
+                                         oversampling_factor=oversampling_factor)
     model = np.full(len(products), complex(*configuration["constant_pg_model"]))
     quality, chosen = validate_pg(products, model, **configuration["thresholds"],
                                   use_model=configuration["pg_source"] == "Model")
-    quality["absolute_scale_verified"] = False
+    quality["absolute_scale_verified"] = True
+    quality["absolute_scale_verification_scope"] = "PGref/PGcal model units; not end-to-end IPF radiometric parity"
+    quality["model_amplitude_residual"] = (abs(products)-abs(model)).tolist()
+    quality["model_phase_residual_rad"] = np.angle(products/model).tolist()
     selected = np.array(quality["selected"])
     relative = chosen[selected]/chosen[selected][0]
     for index, node in enumerate(nodes):
-        node.update(compressed_first_replica_peak=[float(peaks[index].real), float(peaks[index].imag)],
-                    first_replica_lag_samples=float(lags[index]),
-                    pg_product_raw_fft_units=[float(products[index].real), float(products[index].imag)])
+        peak, lag = peaks[index], lags[index]
+        if lag < 0 or lag+len(reference) > len(replicas[index]):
+            raise ValueError("PG correlation peak nằm ngoài cửa sổ chứa trọn nominal chirp; sequence không valid.")
+        node.update(pgcal_peak_dn=[float(peak.real), float(peak.imag)],
+                    inverse_pgcal=[float((1/peak).real), float((1/peak).imag)],
+                    normalized_pg_correction=[float(products[index].real), float(products[index].imag)],
+                    reconstructed_replica_valid=True,
+                    nominal_peak_lag_samples=float(lag),
+                    internal_delay_diagnostic_s=float(lag)/node["sample_rate_hz"] - (
+                        configuration["delta_t_guard1_s"]-configuration["delta_t_suppr_s"]))
     report = {"raw_file": str(level0.filename), "configuration": configuration, "inventory": inventory,
               "nodes": nodes, "quality": quality, "image_rx_mean_powers": image_rx_powers,
               "selected_times_gps_s": np.array(node_times)[selected].tolist(),
               "relative_corrections": np.column_stack((relative.real, relative.imag)).tolist(),
+              "pg_reference_function": {"source": "nominal PG chirp from L0, DAD 4-25 / Calibration Plan 8.1 9.2-14",
+                                        "chirp_parameters_from_l0": chirp_parameters,
+                                        "sample_count": len(reference), "amplitude": float(abs(reference[0])),
+                                        "energy": float(np.vdot(reference, reference).real),
+                                        "fft_convention": "forward unscaled, inverse 1/N (DAD 9.20)",
+                                        "peak_interpolation": "FFT resample with amplitude preservation, three-point parabola"},
+              "normalization_audit": {
+                  "legacy_raw_first_replica_products": np.column_stack((legacy.real, legacy.imag)).tolist(),
+                  "legacy_peak_units": "DN squared * samples; incompatible with PGref/PGcal model units",
+                  "legacy_to_nominal_peak_magnitude_ratio": (abs(legacy_peaks)/abs(peaks)).tolist(),
+                  "stripmap_receive_gain_ratio": 1.,
+                  "stripmap_receive_gain_ratio_source": "Calibration Plan 8.1 9.2.6: single-swath RX settings; no IW/EW swath-1 ratio"},
               "research_parameters": {"oversampling_factor": oversampling_factor,
                                       "denominator_relative_floor": denominator_relative_floor},
               "absolute_radiometric_scale_recovered": False,
-              "limitations": ["PG products use raw FFT/DN units; absolute calibration/normalization is not verified against IPF.",
-                              "Relative normalization cancels a constant PG reference and swath gain ratio; no absolute ratio is invented.",
+              "limitations": ["PG model units follow the nominal 1/N calibration reference; end-to-end radiometric parity is not verified against IPF.",
+                              "DCE still applies relative drift only; no absolute radiometric correction is enabled.",
                               "Only constant AUX PG model is supported without an L0-derived ascending-node epoch."]}
     echoes = [r for r in inventory if r["signal_code"] == 0]
     if echoes:

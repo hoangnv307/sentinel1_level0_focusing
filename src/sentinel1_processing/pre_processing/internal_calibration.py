@@ -72,13 +72,33 @@ def correlation_peak(signal, reference, *, oversampling_factor):
     return complex(peak), float(lag)
 
 
-def pg_products(replicas, *, pg_reference, oversampling_factor):
-    """Eq. 4-36/4-38 before swath gain ratio; raw FFT units, not radiometric parity."""
+def nominal_pg_replica(*, sample_rate_hz, pulse_length_s, start_frequency_hz, ramp_rate_hz_per_s):
+    """DAD Eq. 4-25 / Calibration Plan 8.1 Eq. 9.2-14: amplitude 1/nsamples."""
+    values = (sample_rate_hz, pulse_length_s, start_frequency_hz, ramp_rate_hz_per_s)
+    if (any(np.asarray(v).ndim != 0 or np.asarray(v).dtype.kind not in "fiu"
+            or not np.isfinite(v) for v in values) or sample_rate_hz <= 0 or pulse_length_s <= 0):
+        raise ValueError("Chirp cần sample rate/pulse length dương và tham số thực hữu hạn.")
+    with np.errstate(over="ignore", under="ignore"):
+        samples = np.float64(sample_rate_hz)*pulse_length_s
+    if not np.isfinite(samples) or samples <= 0:
+        raise ValueError("Số mẫu nominal chirp không hữu hạn hoặc bằng zero.")
+    count = int(np.ceil(samples))
+    time = np.arange(count)/sample_rate_hz
+    return np.exp(2j*np.pi*(start_frequency_hz*time + .5*ramp_rate_hz_per_s*time**2))/count
+
+
+def pg_products(replicas, *, reference, pg_reference, oversampling_factor):
+    """PGref/PGcal before swath ratio; caller supplies the calibrated reference.
+
+    Plan 8.1 §9.2.4–6 uses the nominal 1/N chirp. Never substitute a raw
+    measured replica: its amplitude and energy change the units of PGcal.
+    """
     replicas = _complex(replicas, 2)
     ref = np.asarray(pg_reference)
     if ref.ndim != 0 or ref.dtype.kind not in "cfiu" or not np.isfinite(ref) or abs(ref) == 0:
         raise ValueError("PG reference phải hữu hạn khác zero.")
-    peaks, lags = zip(*(correlation_peak(r, replicas[0], oversampling_factor=oversampling_factor) for r in replicas))
+    reference = _complex(reference, 1)
+    peaks, lags = zip(*(correlation_peak(r, reference, oversampling_factor=oversampling_factor) for r in replicas))
     with np.errstate(over="ignore", invalid="ignore"):
         products = pg_reference/np.array(peaks)
     if not np.isfinite(products).all() or np.any(abs(products) == 0):
@@ -130,4 +150,4 @@ def interpolate_pg(times_s, corrections, query_times_s):
     return result
 
 
-__all__ = ["extract_pulse", "reconstruct_replica", "correlation_peak", "pg_products", "validate_pg", "interpolate_pg"]
+__all__ = ["extract_pulse", "reconstruct_replica", "correlation_peak", "nominal_pg_replica", "pg_products", "validate_pg", "interpolate_pg"]
