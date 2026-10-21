@@ -15,6 +15,7 @@ from sentinel1decoder.enums import RxChannelId, SignalType
 
 from sentinel1_processing.azimuth_pre_processing.range import compression
 from sentinel1_processing.common.raw_data_analysis import analyze_batches, correction_parameters
+from sentinel1_processing.common.raw_data_correction import apply as correct_raw_iq
 from sentinel1_processing.doppler_centroid import estimation, geometry
 from sentinel1_processing.range_processing.swst_bias import correct
 from sentinel1_processing.utils.dce_reference_input import ReferenceInput
@@ -86,7 +87,7 @@ def read_auxiliary(product):
 
 def analyze_echoes(
     level0, *, batch_lines, azimuth_start_line, azimuth_step, max_azimuth_lines,
-    range_start_sample, range_stop_sample,
+    range_start_sample, range_stop_sample, iq_correction=None,
 ):
     """Select valid S4/VV echoes in acquisition order; one statistics scope across chunks."""
     positive = (batch_lines, azimuth_step)
@@ -145,7 +146,14 @@ def analyze_echoes(
                 raw = decoder.decode_packets(headers)
                 if raw.shape != (len(headers), width):
                     raise ValueError("Shape decoded echo không khớp header.")
-                yield raw[:, range_start_sample:stop]
+                raw = raw[:, range_start_sample:stop]
+                if iq_correction is not None:
+                    raw = correct_raw_iq(raw, **iq_correction["applied_parameters"], **{
+                        "correct_iq_bias": iq_correction["enabled"]["iq_bias"],
+                        "correct_iq_gain": iq_correction["enabled"]["iq_gain"],
+                        "correct_iq_quadrature": iq_correction["enabled"]["iq_quadrature"],
+                    })
+                yield raw
 
     statistics = analyze_batches(batches())
     return {**statistics, "source_file": str(level0.filename), "scope": "valid echo S4/VV across acquisition chunks",
@@ -155,7 +163,12 @@ def analyze_echoes(
             "sources": sources, "eligible_echo_lines": eligible, "excluded_error_flag_lines": flagged}
 
 
-def compress_echoes(level0, aux, directory, reference_input=None, *, raw_analysis=None, batch_lines=BATCH_LINES):
+def compress_echoes(
+    level0, aux, directory, reference_input=None, *, raw_analysis=None, batch_lines=BATCH_LINES,
+    correct_iq_bias=None, correct_iq_gain=None, correct_iq_quadrature=None,
+    predefined_i_bias=None, predefined_q_bias=None,
+    predefined_gain_imbalance=None, predefined_quadrature_rad=None,
+):
     """Decode/compress theo batch vào memmap; không giữ toàn raw scene trong RAM."""
     if not isinstance(batch_lines, (int, np.integer)) or isinstance(batch_lines, bool) or batch_lines <= 0:
         raise ValueError("batch_lines phải là số nguyên dương.")
@@ -166,22 +179,33 @@ def compress_echoes(level0, aux, directory, reference_input=None, *, raw_analysi
             chunks.append((chunk, metadata))
     if not chunks:
         raise ValueError("L0 không có echo chunk.")
-    if aux["correct_iq_gain"] or aux["correct_iq_quadrature"]:
-        raise ValueError("Demo S1 chưa áp gain/quadrature correction; raw analysis vẫn báo thống kê riêng.")
-    if raw_analysis is None and reference_input is None:
+    flags = {name: aux[name] if value is None else value for name, value in (
+        ("correct_iq_bias", correct_iq_bias), ("correct_iq_gain", correct_iq_gain),
+        ("correct_iq_quadrature", correct_iq_quadrature))}
+    use_reference_bias = raw_analysis is None and reference_input is not None
+    if raw_analysis is None and (reference_input is None or flags["correct_iq_gain"] or flags["correct_iq_quadrature"]):
         raw_analysis = analyze_echoes(level0, batch_lines=batch_lines, **RAW_ANALYSIS_SELECTION)
     if raw_analysis is not None and raw_analysis.get("source_file") != str(level0.filename):
         raise ValueError("Raw analysis không thuộc file L0 đang xử lý.")
-    parameters = None
-    if raw_analysis is not None:
-        parameters = correction_parameters(
-            raw_analysis, correct_iq_bias=aux["correct_iq_bias"],
-            correct_iq_gain=aux["correct_iq_gain"], correct_iq_quadrature=aux["correct_iq_quadrature"],
-        )
-        used = parameters["applied_parameters"]
-        bias = complex(used["i_bias"], used["q_bias"])
-    else:
-        bias = reference_input.bias if aux["correct_iq_bias"] else 0j
+    bias_source = "L0 raw analysis, one acquisition scope"
+    if predefined_i_bias is not None or predefined_q_bias is not None:
+        bias_source = "explicit predefined bias; see per-component sources"
+    elif use_reference_bias:
+        bias_source = "L1 support/*BiasUsedForCorrection"
+    if use_reference_bias:
+        if predefined_i_bias is None:
+            predefined_i_bias = reference_input.bias.real
+        if predefined_q_bias is None:
+            predefined_q_bias = reference_input.bias.imag
+    parameters = correction_parameters(
+        raw_analysis if raw_analysis is not None else {
+            "mean_i": None, "mean_q": None, "iq_gain_imbalance": None,
+            "iq_quadrature_departure_rad": None},
+        **flags, predefined_i_bias=predefined_i_bias, predefined_q_bias=predefined_q_bias,
+        predefined_gain_imbalance=predefined_gain_imbalance, predefined_quadrature_rad=predefined_quadrature_rad,
+    )
+    used = parameters["applied_parameters"]
+    bias = complex(used["i_bias"], used["q_bias"])
     constant_fields = [
         "PRI", "Range Decimation", "Tx Pulse Length", "Tx Ramp Rate",
         "Tx Pulse Start Frequency", "Rank", "Swath Number", "Rx Channel ID",
@@ -243,8 +267,8 @@ def compress_echoes(level0, aux, directory, reference_input=None, *, raw_analysi
                 raw = decoder.decode_packets(metadata.iloc[start:stop])
             if raw.shape != (stop - start, n_range) or not np.isfinite(raw).all():
                 raise ValueError(f"Chunk {chunk}: dữ liệu decode không hợp lệ.")
+            raw = correct_raw_iq(raw, **used, **flags)
             if reference_input is not None:
-                raw -= bias
                 raw /= rx_gain[None, :]
                 raw *= reference_input.pg_gain(eta[start:stop])[:, None]
             _, range_times = compression.compress(
@@ -252,7 +276,7 @@ def compress_echoes(level0, aux, directory, reference_input=None, *, raw_analysi
                 pulse_start_frequency_hz=float(first["Tx Pulse Start Frequency"]),
                 pulse_ramp_rate_hz_per_s=float(first["Tx Ramp Rate"]),
                 pulse_length_s=float(first["Tx Pulse Length"]),
-                iq_bias=bias if reference_input is None else 0j,
+                iq_bias=0j,
                 range_reference_function=reference, range_time_shift_s=shift, output="slc",
                 output_array=data[start:stop],
             )
@@ -266,7 +290,7 @@ def compress_echoes(level0, aux, directory, reference_input=None, *, raw_analysi
             "chunk": int(chunk), "shape": list(segments[-1].range_compressed.shape),
             "hardware_delay_far_throwaway_samples": far_throwaway,
             "iq_bias": [bias.real, bias.imag],
-            "iq_bias_source": "L0 raw analysis, one acquisition scope" if raw_analysis is not None else "L1 support/*BiasUsedForCorrection",
+            "iq_bias_source": bias_source if flags["correct_iq_bias"] else "disabled",
             "iq_analysis_lines": raw_analysis["line_count"] if raw_analysis is not None else 0,
             "raw_data_analysis": raw_analysis if chunk == chunks[0][0] else None,
             "raw_correction_parameters": parameters,
@@ -402,6 +426,12 @@ def main():
     parser.add_argument("--analysis-lines", type=int, default=None)
     parser.add_argument("--analysis-range-start", type=int, default=0)
     parser.add_argument("--analysis-range-stop", type=int, default=None)
+    for name in ("bias", "gain", "quadrature"):
+        parser.add_argument(f"--correct-iq-{name}", action=argparse.BooleanOptionalAction, default=None,
+                            help="Ghi đè cờ AUX_PP1 cho thử nghiệm; mặc định giữ AUX.")
+    for name in ("i-bias", "q-bias", "gain-imbalance", "quadrature-rad"):
+        parser.add_argument(f"--predefined-{name}", type=float, default=None,
+                            help="Statistic tường minh thay số đo; quadrature tính bằng radians.")
     parser.add_argument("--l0-raw-analysis", action="store_true",
                         help="Thay bias L1 bằng raw analysis L0 khi dùng --l1-input-corrections.")
     parser.add_argument(
@@ -426,12 +456,19 @@ def main():
         azimuth_step=args.analysis_step, max_azimuth_lines=args.analysis_lines,
         range_start_sample=args.analysis_range_start, range_stop_sample=args.analysis_range_stop,
     )
+    correction_inputs = {key: getattr(args, key) for key in (
+        "correct_iq_bias", "correct_iq_gain", "correct_iq_quadrature", "predefined_i_bias",
+        "predefined_q_bias", "predefined_gain_imbalance", "predefined_quadrature_rad")}
     args.output.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="dce-", dir=args.output) as directory:
         segments, pri, sample_rate, diagnostics = compress_echoes(
             level0, aux, directory, reference_input,
             raw_analysis=raw_analysis if reference_input is None or args.l0_raw_analysis else None,
             batch_lines=args.batch_lines,
+            **correction_inputs,
+        )
+        corrected_analysis = analyze_echoes(
+            level0, **raw_analysis["selection"], iq_correction=diagnostics[0]["raw_correction_parameters"],
         )
         far_throwaway = diagnostics[0]["hardware_delay_far_throwaway_samples"]
         config, starts, t0, offset = infer_configuration(
@@ -456,6 +493,8 @@ def main():
             "range_origin_s_from_l0": t0, "l1_zero_dop_minus_acq_time_s": offset,
             "configuration_source": "Layout suy từ L1 và kiểm trên lưới L0 theo yêu cầu người dùng; DC tính từ L0.",
             "raw_data_analysis": raw_analysis,
+            "post_iq_correction_analysis": corrected_analysis,
+            "iq_correction_overrides": correction_inputs,
             "input_corrections": {**(reference_input.summary() if reference_input else {"source": "L0 raw analysis + nominal chirp từ header"}),
                                   "iq_bias_reference_l1": None if reference_input is None else [reference_input.bias.real, reference_input.bias.imag],
                                   "iq_bias": diagnostics[0]["iq_bias"],

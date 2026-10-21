@@ -31,9 +31,16 @@ cho Sentinel-1.
   nominal chirp dùng AUX_INS. Các phổ mở rộng trong `check_range_reference.py`
   là giả thuyết nghiên cứu, không tự coi là công thức IPF Extended Tapered.
 - Raw analysis S4 đã triển khai tại `common/raw_data_analysis.py`; xem
-  [API, các diễn giải DAD và 17 test](docs/sentinel1_raw_data_analysis.md).
+  [API và các diễn giải DAD](docs/sentinel1_raw_data_analysis.md).
   Các tham số được DAD gọi configurable phải đi qua đầu vào của tác vụ,
   không chôn trong thân hàm. Batch size không được làm đổi phạm vi thống kê.
+- `common/raw_data_correction.apply` hỗ trợ đủ bias → gain → quadrature
+  theo §9.2.1; nhận statistic/cờ tường minh, không sửa input. Xem
+  [công thức, kiểm thử và so sánh S4/VV](docs/sentinel1_raw_data_correction.md).
+  Demo DCE áp trước RX/PG/range compression; truyền `iq_bias=0j` cho range
+  compressor để không trừ hai lần. Giữ mặc định AUX: bias bật, gain/quad
+  tắt; thử nghiệm bật cả ba không cải thiện RMSE DCE. JSON có thống kê
+  trước–sau cùng subset và nguồn tham số; theta luôn radians.
 - `references/` chứa **tài liệu tham khảo thuật toán**. Tại lần khảo sát
   20/10/2026, thư mục chỉ có
   `ESA2022_Sentinel-1 Level 1 Detailed Algorithm Definition_bookmarked.pdf`:
@@ -211,7 +218,8 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
 - `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
 - `src/sentinel1_processing/` — pure processing package:
   - `pre_processing/downlink_header_validation/` — kiểm tra header downlink theo DAD §4.3.
-  - `common/raw_data_correction.py` — I/Q bias correction theo DAD §9.2.
+  - `common/raw_data_correction.py` — bias/gain/quadrature theo DAD §9.2.1;
+    `estimate_iq_bias` giữ tương thích notebook S6, `apply` là operator chung.
   - `common/raw_data_analysis.py` — thống kê streaming §4.1 và chọn tham số
     correction với cờ/predefined values nhận tường minh từ caller.
   - `range_processing/` — `range_reference_function`, `swst_bias`, `dependent_gain`.
@@ -281,11 +289,12 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy raw analysis ngày 21/10/2026: 73 test, 67 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy raw correction ngày 21/10/2026: 86 test, 80 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
   15 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  17 test `test/test_raw_data_analysis.py` đều đạt, gồm một test echo S4
+  20 test `test/test_raw_data_analysis.py` và 10 test
+  `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.
 - New pure-processing functions should get a `test_*` unittest; keep `np.testing.assert_*` for array comparisons.

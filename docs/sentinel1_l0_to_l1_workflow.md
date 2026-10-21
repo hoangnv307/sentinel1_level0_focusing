@@ -324,6 +324,13 @@ giảm lưu trữ. Demo có thể cache decoded data; cache không được thay
    đúng swath/RX polarisation, tính đúng suppressed-time convention, đơn vị μs.
    Làm theo mô hình Eq. 9-9–9-16; không tự đổi quy ước dB/power/amplitude.
 
+§9.2.1 đã có operator `common.raw_data_correction.apply`: nhận ba cờ
+và bốn statistic tường minh, thứ tự bias → gain → quadrature, theta radians,
+không sửa input. Demo DCE dùng cùng statistic qua các batch, trước RX/PG;
+range compressor nhận bias 0 sau operator để tránh correction hai lần.
+Xem [API, test và kết quả S4/VV](sentinel1_raw_data_correction.md).
+Đây là trạng thái của demo DCE; notebook focus S6 vẫn dùng bias riêng.
+
 **Checkpoint:** mean I/Q sau bias correction gần 0 theo tolerance thống kê;
 gain correction finite; mask blackfill vẫn riêng; không áp correction hai lần.
 

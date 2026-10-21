@@ -93,9 +93,11 @@ L1 này; chọn toàn cảnh là cấu hình của demo, không nhận là lựa
 
 Kết quả phân biệt `selected_statistics`, `sources`, `enabled` và
 `applied_parameters`. Correction tắt trả identity tương ứng 0/0/1/0,
-nhưng số đo vẫn được báo. Pipeline S1 hiện chỉ áp bias; nếu bật gain/
-quadrature correction thì demo DCE từ chối vì operator đó chưa triển khai.
-Việc tính và chọn các thống kê vẫn có thể chạy riêng.
+nhưng số đo vẫn được báo. Demo DCE hiện áp đủ ba operator theo cấu hình;
+mặc định AUX S4 chỉ bật bias. Xem [bước raw correction §9.2.1](sentinel1_raw_data_correction.md)
+về công thức, API/CLI, thống kê trước–sau và 3 integration test bổ sung
+(nâng file test analysis từ 17 lên 20). Các bảng/lượt chạy raw analysis
+ban đầu bên dưới giữ số liệu của bước triển khai trước đó.
 
 Dữ liệu non-finite, batch rỗng hoặc width thay đổi bị từ chối. Các dòng
 variance 0 hoặc correlation hoàn hảo ±1 không có Fisher z hữu hạn được

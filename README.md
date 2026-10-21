@@ -143,6 +143,16 @@ không còn giới hạn số echo phân tích. Phạm vi chọn mẫu có thể
 qua `--analysis-start-line`, `--analysis-step`, `--analysis-lines`,
 `--analysis-range-start`, `--analysis-range-stop`, `--batch-lines`.
 Xem [kết quả và các test raw analysis](docs/sentinel1_raw_data_analysis.md).
+Demo hỗ trợ đầy đủ bias → gain → quadrature theo DAD §9.2.1 qua
+`common.raw_data_correction.apply`; mặc định vẫn theo cờ AUX_PP1.
+Các cặp `--correct-iq-bias`/`--no-correct-iq-bias`, tương tự cho gain và
+quadrature, cho phép ghi đè để thử nghiệm. Bốn tùy chọn
+`--predefined-i-bias`, `--predefined-q-bias`, `--predefined-gain-imbalance`,
+`--predefined-quadrature-rad` thay statistic đo được, không tự bật correction.
+JSON ghi tham số/nguồn thực dùng và thống kê trước–sau trên cùng subset.
+Xem [công thức, API, 13 test mới và đối chứng S4/VV](docs/sentinel1_raw_data_correction.md).
+Khi bật cả ba, gain về `1,000000015`, theta về `−4,76e−8 rad`, nhưng
+RMSE DCE với L1 không cải thiện; tiếp tục giữ bias bật, gain/quadrature tắt.
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.
 

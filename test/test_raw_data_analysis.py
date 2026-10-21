@@ -200,6 +200,69 @@ class RawDataSelectionTest(unittest.TestCase):
             _, _, _, disabled = demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis, batch_lines=2)
             self.assertEqual([d["iq_bias"] for d in disabled], [[0., 0.], [0., 0.]])
 
+    def test_dce_applies_predefined_iq_before_receiver_pg_and_range_compression(self):
+        aux = dict(correct_iq_bias=False, correct_iq_gain=False, correct_iq_quadrature=False, swst_bias_s=0.)
+        predefined = dict(predefined_i_bias=.5, predefined_q_bias=-.25,
+                          predefined_gain_imbalance=1.5, predefined_quadrature_rad=.2)
+        flags = dict(correct_iq_bias=True, correct_iq_gain=True, correct_iq_quadrature=True)
+        reference = SimpleNamespace(
+            bias=100+200j, internal_delay_s=0.,
+            range_reference=lambda rate, pulse, length: np.ones(length, np.complex64),
+            receiver_gain=lambda n, *args: np.full(n, 2.),
+            pg_gain=lambda eta: np.full(len(eta), 3.),
+            range_gain_bank=lambda tau: None,
+            apply_range_gain=lambda *args: None,
+        )
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            analysis = demo.analyze_echoes(self.level0, **self.config)
+            with patch.object(demo.compression, "compress", wraps=demo.compression.compress) as compress:
+                _, _, _, diagnostics = demo.compress_echoes(
+                    self.level0, aux, tmp, reference, raw_analysis=analysis,
+                    batch_lines=3, **flags, **predefined)
+            used_rows = np.concatenate([call.args[0] for call in compress.call_args_list])
+            i, q = self.raw.real-.5, (self.raw.imag+.25)*1.5
+            expected = (i + 1j*(q/np.cos(.2)-i*np.tan(.2))) / 2 * 3
+            np.testing.assert_allclose(used_rows, expected, atol=2e-14)
+            self.assertTrue(all(call.kwargs["iq_bias"] == 0j for call in compress.call_args_list))
+            for diagnostic in diagnostics:
+                selected = diagnostic["raw_correction_parameters"]
+                self.assertEqual(set(selected["sources"].values()), {"predefined"})
+                self.assertTrue(all(selected["enabled"].values()))
+
+    def test_post_correction_analysis_uses_same_scope_and_matches_independent_formula(self):
+        aux_flags = dict(correct_iq_bias=True, correct_iq_gain=True, correct_iq_quadrature=True)
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder):
+            before = demo.analyze_echoes(self.level0, **self.config)
+            correction = correction_parameters(before, **aux_flags)
+            after = demo.analyze_echoes(self.level0, **self.config, iq_correction=correction)
+        i = self.raw.real - before["mean_i"]
+        theta = before["iq_quadrature_departure_rad"]
+        q = ((self.raw.imag-before["mean_q"])*before["iq_gain_imbalance"] - i*np.sin(theta))/np.cos(theta)
+        expected = analyze_batches([i+1j*q])
+        for key in ("mean_i", "mean_q", "std_i", "std_q", "iq_gain_imbalance", "iq_quadrature_departure_rad"):
+            self.assertAlmostEqual(after[key], expected[key], places=13)
+        self.assertEqual(after["selection"], before["selection"])
+        self.assertEqual(after["sources"], before["sources"])
+
+    def test_reference_mode_keeps_l1_bias_when_optional_gain_needs_l0_statistics(self):
+        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False, swst_bias_s=0.)
+        reference = SimpleNamespace(
+            bias=.8-.6j, internal_delay_s=0.,
+            range_reference=lambda rate, pulse, length: np.ones(length, np.complex64),
+            receiver_gain=lambda n, *args: np.ones(n),
+            pg_gain=lambda eta: np.ones(len(eta)), range_gain_bank=lambda tau: None,
+            apply_range_gain=lambda *args: None,
+        )
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            _, _, _, diagnostics = demo.compress_echoes(
+                self.level0, aux, tmp, reference, batch_lines=2, correct_iq_gain=True)
+        selected = diagnostics[0]["raw_correction_parameters"]
+        self.assertEqual(diagnostics[0]["iq_bias"], [.8, -.6])
+        self.assertEqual(diagnostics[0]["iq_analysis_lines"], 8)
+        self.assertEqual(selected["sources"]["gain_imbalance"], "measured")
+        self.assertEqual(selected["sources"]["i_bias"], "predefined")
+        self.assertEqual(diagnostics[0]["iq_bias_source"], "L1 support/*BiasUsedForCorrection")
+
 
 PRODUCT_RAW = Path.home()/"sar_data/focusing_data/product_1/level-0/s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat"
 
