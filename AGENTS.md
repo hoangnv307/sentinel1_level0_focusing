@@ -56,8 +56,16 @@ cho Sentinel-1.
   packet, PG ở chunk 7–12/15–20, image ở 1–6/21–26; Signal Type 11 là
   TA cho S1A/B, 15 là TXH isolation. PG RGDEC0 có Fs=112,60416672 MHz,
   không dùng 100 MHz bandwidth làm sample rate. Pulse order AUX là 1-based.
-  `--l0-pg-drift` áp PG tương đối từ L0/AUX (opt-in); absolute FFT/DN/model
-  normalization chưa xác minh, JSON `absolute_scale_verified=false`.
+  `--l0-pg-drift` áp PG tương đối từ L0/AUX (opt-in). Đọc
+  [kiểm định normalization PG](docs/sentinel1_pg_normalization.md): reference
+  là nominal PG chirp **1/N** từ header L0 theo Calibration Plan 8.1
+  §9.2.4–6 và DAD §4.2.2; `pg_products` bắt buộc nhận `reference` tường minh.
+  Không dùng nguyên replica đo được đầu tiên: đổi units, mất absolute phase,
+  PG sai thang ~4,78 triệu lần. `absolute_scale_verified=true` chỉ xác nhận
+  units `PGref/PGcal` so model, **không** xác nhận radiometry IPF toàn chuỗi.
+  Stripmap một swath có RX gain ratio=1 theo Plan §9.2.6; không nhầm S4
+  với sub-swath thứ 4 của TOPSAR. AUX_PP1 3.15 dùng amplitude tuyến tính,
+  phase radian theo Aux Spec 3/16; XSD 3.14 đi kèm còn ghi dB/độ đã lỗi thời.
   Node PG dùng acquisition time, không lấy timestamp L1 làm input.
   **PG annotation đã là inverse instrument response**; reference chuẩn hóa
   `value(t)/value(first)`, không nghịch đảo thêm lần nữa. Các report reference
@@ -317,12 +325,12 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy PG calibration ngày 21/10/2026: 118 test, 112 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy normalization PG ngày 21/10/2026: 125 test, 119 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
   16 test trong `test/test_sentinel1_dce_demo.py` và 5 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  24 test `test/test_raw_data_analysis.py`, 17 test internal calibration,
+  24 test `test/test_raw_data_analysis.py`, 24 test internal calibration,
   10 test receiver compensation và 10 test
   `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.

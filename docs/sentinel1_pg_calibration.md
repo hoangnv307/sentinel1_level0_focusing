@@ -1,5 +1,11 @@
 # Calibration L0 và PG drift tương đối — S1A/S4/VV
 
+**Snapshot lịch sử trước sửa reference normalization.** Các API, units và kết
+quả trong §1–7 bên dưới ghi lại phiên bản `b391d8e`. Trạng thái hiện hành,
+API `pg_products(..., reference=...)` và kết quả tái chạy nằm trong
+[kiểm định chuẩn hóa PG](sentinel1_pg_normalization.md). Nhánh hiện hành
+dùng nominal PG chirp `1/N`, không dùng toàn replica đầu làm reference.
+
 Khảo sát và triển khai ngày 21/10/2026 trên `product_1`, sau
 [receiver compensation](sentinel1_receiver_gain_compensation.md). Đầu ra:
 kiểm kê calibration, sơ đồ nguồn tham số, PG complex/validity và đối chứng

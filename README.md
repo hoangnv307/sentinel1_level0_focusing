@@ -163,7 +163,9 @@ Receiver gain compensation §9.2.3 hiện chạy độc lập từ L0/AUX theo
 Đã có [kiểm kê calibration và PG drift từ L0/AUX](docs/sentinel1_pg_calibration.md):
 800 calibration packet, hai PG sequence bao echo, API PCC/replica/QC và
 đối chứng cùng layout DCE. Dùng `--l0-pg-drift` để áp drift **tương đối**;
-chưa xác nhận absolute PG/model units nên giữ chế độ opt-in. Kiểm kê riêng:
+đã [sửa chuẩn hóa PG bằng nominal chirp `1/N`](docs/sentinel1_pg_normalization.md),
+đối chiếu đúng thang `PGref/PGcal` với model AUX. Giữ opt-in vì chưa kiểm
+chứng radiometry toàn pipeline/IPF. Kiểm kê riêng:
 `python workflows/sentinel-1/analyze_calibration.py` với `MPLBACKEND=Agg`.
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.

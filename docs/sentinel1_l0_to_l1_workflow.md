@@ -342,8 +342,13 @@ gain correction finite; mask blackfill vẫn riêng; không áp correction hai l
 
 Đã có bản PG L0/AUX **tương đối** qua `--l0-pg-drift`; xem
 [kiểm kê calibration, API/QC và đối chứng](sentinel1_pg_calibration.md).
-Absolute FFT/DN/model units và swath ratio chưa xác nhận, nên chưa bật
-default. Annotation inverse instrument PG là correction theo chiều trực
+Đã [kiểm định normalization PG](sentinel1_pg_normalization.md): dùng nominal
+chirp `1/N` theo Calibration Plan 8.1 §9.2.4–6, không dùng nguyên replica
+đo được đầu tiên. DAD §4.2.2 dùng nominal PG nhưng Eq. 4-36 còn ghi
+reference đo được; phải ghi rõ diễn giải và nguồn, không tráo hai cách.
+`PGref/PGcal` cùng units với AUX model; SM một swath có RX ratio=1.
+Chưa kiểm chứng radiometry toàn pipeline nên giữ opt-in.
+Annotation inverse instrument PG là correction theo chiều trực
 tiếp sau chuẩn hóa node đầu; không đảo reciprocal thêm lần nữa.
 
 Nội suy tuyến tính PG complex theo absolute echo line/time từ hai PG valid
