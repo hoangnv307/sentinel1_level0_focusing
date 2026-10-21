@@ -20,6 +20,8 @@ from sentinel1_processing.common.receiver_gain_compensation import calculate_gai
 from sentinel1_processing.doppler_centroid import estimation, geometry
 from sentinel1_processing.range_processing.swst_bias import correct
 from sentinel1_processing.utils.dce_reference_input import ReferenceInput
+from sentinel1_processing.utils.pg_calibration_input import analyze_calibration
+from sentinel1_processing.pre_processing.internal_calibration import interpolate_pg
 
 
 BATCH_LINES = 256
@@ -171,6 +173,7 @@ def compress_echoes(
     predefined_i_bias=None, predefined_q_bias=None,
     predefined_gain_imbalance=None, predefined_quadrature_rad=None,
     correct_rx_variation=None,
+    pg_correction_provider=None,
 ):
     """Decode/compress theo batch vào memmap; không giữ toàn raw scene trong RAM."""
     if not isinstance(batch_lines, (int, np.integer)) or isinstance(batch_lines, bool) or batch_lines <= 0:
@@ -278,8 +281,12 @@ def compress_echoes(
                 if rx_enabled:
                     # Eq. 9-16 uses amplitude sqrt(GV), not the power gain GV.
                     raw /= np.sqrt(rx_gain)[None, :]
-                if reference_input is not None:
-                    raw *= reference_input.pg_gain(eta[start:stop])[:, None]
+                if pg_correction_provider is not None or reference_input is not None:
+                    pg = np.asarray((pg_correction_provider if pg_correction_provider is not None else
+                                     reference_input.pg_gain)(eta[start:stop]))
+                    if pg.shape != (stop-start,) or not np.isfinite(pg).all() or np.any(abs(pg) == 0):
+                        raise ValueError("PG correction provider phải trả vector theo echo hữu hạn, khác zero.")
+                    raw *= pg[:, None]
             if not np.isfinite(raw).all():
                 raise ValueError(f"Chunk {chunk}: dữ liệu sau receiver/PG correction không hữu hạn.")
             _, range_times = compression.compress(
@@ -305,6 +312,8 @@ def compress_echoes(
             "iq_analysis_lines": raw_analysis["line_count"] if raw_analysis is not None else 0,
             "raw_data_analysis": raw_analysis if chunk == chunks[0][0] else None,
             "raw_correction_parameters": parameters,
+            "pg_source": "caller-supplied correction" if pg_correction_provider is not None else (
+                "L1 inverse-PG annotation" if reference_input is not None else "none"),
             "receiver_compensation": {
                 "enabled": bool(rx_enabled),
                 "flag_source": "AUX_PP1 commonProcParams/correctRxVariationFlag" if correct_rx_variation is None else "explicit override",
@@ -457,6 +466,10 @@ def main():
                             help="Statistic tường minh thay số đo; quadrature tính bằng radians.")
     parser.add_argument("--correct-rx-variation", action=argparse.BooleanOptionalAction, default=None,
                         help="Ghi đè receiver gain compensation; mặc định theo AUX_PP1.")
+    parser.add_argument("--l0-pg-drift", action="store_true",
+                        help="Dựng PG drift tương đối từ calibration L0/AUX; chế độ nghiên cứu, chưa phục hồi absolute scale.")
+    parser.add_argument("--pg-oversampling-factor", type=int, default=16)
+    parser.add_argument("--pg-denominator-relative-floor", type=float, default=0.)
     parser.add_argument("--l0-raw-analysis", action="store_true",
                         help="Thay bias L1 bằng raw analysis L0 khi dùng --l1-input-corrections.")
     parser.add_argument(
@@ -474,8 +487,16 @@ def main():
         suffix = "_l1_input" if args.l1_input_corrections else ""
         if args.l1_input_corrections and args.l0_raw_analysis:
             suffix += "_l0_raw_analysis"
+        if args.l0_pg_drift:
+            suffix += "_l0_pg_drift"
         args.output = Path(f"output/sentinel-1/product_1_dce{suffix}")
     level0 = sentinel1decoder.Level0File(str(raw))
+    pg_report = pg_provider = None
+    if args.l0_pg_drift:
+        pg_times, pg_values, pg_report = analyze_calibration(
+            level0, product, oversampling_factor=args.pg_oversampling_factor,
+            denominator_relative_floor=args.pg_denominator_relative_floor)
+        pg_provider = lambda query: interpolate_pg(pg_times, pg_values, query)
     raw_analysis = analyze_echoes(
         level0, batch_lines=args.batch_lines, azimuth_start_line=args.analysis_start_line,
         azimuth_step=args.analysis_step, max_azimuth_lines=args.analysis_lines,
@@ -492,6 +513,7 @@ def main():
             batch_lines=args.batch_lines,
             **correction_inputs,
             correct_rx_variation=args.correct_rx_variation,
+            pg_correction_provider=pg_provider,
         )
         corrected_analysis = analyze_echoes(
             level0, **raw_analysis["selection"], iq_correction=diagnostics[0]["raw_correction_parameters"],
@@ -522,9 +544,12 @@ def main():
             "post_iq_correction_analysis": corrected_analysis,
             "iq_correction_overrides": correction_inputs,
             "receiver_compensation_override": args.correct_rx_variation,
+            "l0_pg_calibration": pg_report,
             "input_corrections": {**(reference_input.summary() if reference_input else {"source": "L0 raw analysis + nominal chirp từ header + receiver compensation L0/AUX"}),
                                   "rx_variation_applied": diagnostics[0]["receiver_compensation"]["enabled"],
                                   "rx_variation_flag_source": diagnostics[0]["receiver_compensation"]["flag_source"],
+                                  "pg_correction_source": f"L0/AUX PG (relative, {pg_report['quality']['source']})" if pg_report is not None else (
+                                      "L1 inverse-PG annotation" if reference_input is not None else "none"),
                                   "iq_bias_reference_l1": None if reference_input is None else [reference_input.bias.real, reference_input.bias.imag],
                                   "iq_bias": diagnostics[0]["iq_bias"],
                                   "iq_bias_actually_applied": diagnostics[0]["iq_bias"],
@@ -537,7 +562,7 @@ def main():
                     "L1 input corrections không còn là kiểm chứng L0 độc lập với L1.",
                     "Bỏ mép xa thiếu support khi advance hardware delay; Fine DC L1 nội suy tới tâm block mới để so sánh.",
                     "RRF nominal theo polynomial/delay chưa chứng minh tái tạo chính xác spectrum Extended Tapered của IPF.",
-                ] if reference_input else ["Demo chưa áp PG drift, EAP/RSL và RFI mitigation."]),
+                ] if reference_input else [f"Demo chưa áp {('PG drift, ' if pg_report is None else '')}EAP/RSL và RFI mitigation."]),
                 "Geometry dùng ephemeris L0 và ellipsoid, không dùng AUX_RESORB/DEM hay orbit L1.",
                 "L1 không xác định duy nhất range window/weighting, unwrap FFT hay ngưỡng outlier.",
             ],

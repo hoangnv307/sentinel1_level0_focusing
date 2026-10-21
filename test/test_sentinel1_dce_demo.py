@@ -124,13 +124,15 @@ class Sentinel1DceDemoTest(unittest.TestCase):
         self.auxiliary = auxiliary
         return ReferenceInput(self.reference, auxiliary)
 
-    def test_precomputed_bias_receiver_and_inverse_pg_recover_known_tone(self):
+    def test_precomputed_bias_receiver_and_annotated_pg_recover_known_tone(self):
         correction = self.reference_input()
         eta = np.asarray(self.segments[0].azimuth_times_s)
         receiver = np.sqrt(correction.receiver_gain(64, self.rate, 90e-6, 50e-6, 1e-6))
         np.testing.assert_allclose(receiver, np.sqrt(10))
-        np.testing.assert_allclose(correction.pg_corrections, [1, 0.5 * np.exp(-1j * np.pi / 4)])
-        instrument_gain = 1 / correction.pg_gain(eta)
+        np.testing.assert_allclose(correction.pg_corrections, [1, 2 * np.exp(1j * np.pi / 4)])
+        fraction = (eta-eta[0])/3
+        expected_correction = (1-fraction) + fraction*2*np.exp(1j*np.pi/4)
+        instrument_gain = 1 / expected_correction
         tone = np.exp(2j * np.pi * 7 * np.arange(eta.size) * self.pri)
         raw = tone[:, None] * instrument_gain[:, None] * receiver[None, :] + correction.bias
         recovered = (raw - correction.bias) / receiver[None, :] * correction.pg_gain(eta)[:, None]

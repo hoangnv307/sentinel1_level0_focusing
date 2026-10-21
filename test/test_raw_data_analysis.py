@@ -357,6 +357,30 @@ class RawDataSelectionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "sau receiver/PG correction không hữu hạn"):
                     demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis, batch_lines=2)
 
+    def test_explicit_pg_provider_replaces_reference_pg_and_invalid_values_stop_before_fft(self):
+        aux = dict(correct_iq_bias=True, correct_iq_gain=False, correct_iq_quadrature=False,
+                   correct_rx_variation=False, swst_bias_s=0.)
+        reference = SimpleNamespace(
+            bias=.25-.125j, internal_delay_s=0.,
+            range_reference=lambda rate, pulse, length: np.ones(length, np.complex64),
+            pg_gain=Mock(side_effect=AssertionError("Không được dùng PG L1 khi caller cấp PG L0")),
+            range_gain_bank=lambda tau: None, apply_range_gain=lambda *args: None)
+        with patch.object(demo.sentinel1decoder, "Level0Decoder", return_value=self.decoder), TemporaryDirectory() as tmp:
+            analysis = demo.analyze_echoes(self.level0, **self.config)
+            with patch.object(demo.compression, "compress", wraps=demo.compression.compress) as compress:
+                _, _, _, diagnostics = demo.compress_echoes(
+                    self.level0, aux, tmp, reference, raw_analysis=analysis, batch_lines=3,
+                    pg_correction_provider=lambda eta: np.full(len(eta), 3+0j))
+            rows = np.concatenate([call.args[0] for call in compress.call_args_list])
+            np.testing.assert_allclose(rows, 3*(self.raw-(.25-.125j)))
+            self.assertEqual([d["pg_source"] for d in diagnostics], ["caller-supplied correction"]*2)
+            for invalid in (lambda eta: np.zeros(len(eta), complex), lambda eta: np.full(len(eta), np.nan),
+                            lambda eta: np.ones((len(eta), 1), complex)):
+                with patch.object(demo.compression, "compress", side_effect=AssertionError("Không được tới FFT")):
+                    with self.assertRaisesRegex(ValueError, "PG correction provider"):
+                        demo.compress_echoes(self.level0, aux, tmp, raw_analysis=analysis,
+                                             pg_correction_provider=invalid)
+
 
 PRODUCT_RAW = Path.home()/"sar_data/focusing_data/product_1/level-0/s1a-s4-raw-s-vv-20250903t183628-20250903t183638-060827-0792bb.dat"
 

@@ -99,8 +99,8 @@ class ReferenceInput:
         if len(valid) < 2 or np.any(np.diff(self.pg_times) <= 0) or np.any(pg_amplitude <= 0):
             raise ValueError("Không đủ hai PG valid tăng theo thời gian với amplitude dương.")
         self.pg_annotated = pg_amplitude * np.exp(1j * pg_phase)
-        # Product Specification Table 6-57: annotation chứa 1/PG, không phải PG correction.
-        self.pg_corrections = self.pg_annotated[0] / self.pg_annotated
+        # Annotation is already inverse instrument PG: normalize directly, do not invert again.
+        self.pg_corrections = self.pg_annotated / self.pg_annotated[0]
         self.rx_enabled = auxiliary["correct_rx_variation"]
         self.rx_enabled_annotation = _flag(processing, "rxVariationCorrectionApplied")
         self.rx_trend = np.asarray(auxiliary["rx_gain_trend"], dtype=float)
