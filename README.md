@@ -171,6 +171,10 @@ CLI S4 hiện [bù internal delay đo từ PG L0](docs/sentinel1_internal_delay.
 mặc định (`--internal-delay-source l0`), khoảng `4,333088620e-7 s`.
 Chọn `none` để tắt hoặc `l1` cùng `--l1-input-corrections` để đối chứng.
 `--minimum-far-range-discard-samples 25` giữ chung ROI khi so các nguồn delay.
+[Delay và PG QC chạy độc lập](docs/sentinel1_calibration_availability.md):
+một peak hợp lệ đủ đo delay, nhưng PG drift vẫn cần hai node để nội suy.
+PG QC thất bại không chặn lượt chỉ cần delay; thiếu peak cho delay hoặc
+thiếu node cho PG đang được bật thì CLI lưu `calibration.json` và báo lỗi.
 Geometry dùng orbit/attitude L0 và ellipsoid. Vì vậy RMSE với L1 là kết quả đánh giá, không phải cam
 kết parity hay ngưỡng pass/fail của demo.
 

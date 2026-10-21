@@ -268,6 +268,9 @@ Trình tự §4.2.2:
    Đã [tích hợp delay L0 vào CLI S4](sentinel1_internal_delay.md): mean trên
    các sequence có peak correlation hợp lệ, không lọc theo PG amplitude/phase
    QC. CLI mặc định nguồn L0; delay và guard/suppression là đầu vào tường minh.
+   [Availability của delay/PG độc lập](sentinel1_calibration_availability.md):
+   ít nhất một peak valid cho mean delay; ít nhất hai node được chọn cho
+   PG interpolation. Không dùng thất bại PG QC để xóa delay đã đo được.
 8. Tạo nominal image chirp từ amplitude/phase coefficient AUX_INS;
    tái dựng/trích image replica nếu cấu hình chọn extracted chirp.
 9. Validate image replica bằng 3-dB width, PSLR, ISLR; discard replica không

@@ -76,6 +76,15 @@ cho Sentinel-1.
   Guard mép xa xét tổng delay + fractional alignment; có minimum guard để
   chạy cùng ROI. Low-level `compress_echoes(..., internal_delay_s=None)`
   giữ hành vi cũ cho audit scripts; CLI luôn truyền delay tường minh.
+  [Delay và PG QC đã tách độc lập](docs/sentinel1_calibration_availability.md):
+  `analyze_calibration` trả report kể cả khi một nhánh không sẵn sàng.
+  Một peak hợp lệ đủ đo delay; PG interpolation cần >=2 node được chọn.
+  Đọc `internal_delay.available` và `quality.interpolation_available`, không
+  chỉ nhìn `quality.source`. `validate_pg` không còn raise vì thiếu hai node;
+  `interpolate_pg` và CLI giữ gate này. Không có peak: `mean_s=null`, không
+  thay bằng 0/L1/AUX. CLI lưu `calibration.json` trước lỗi thiếu dữ liệu.
+  Sequence lỗi reconstruction/peak được loại với lý do riêng; header,
+  PCC selection, config và chirp mismatch vẫn lỗi toàn acquisition.
   **PG annotation đã là inverse instrument response**; reference chuẩn hóa
   `value(t)/value(first)`, không nghịch đảo thêm lần nữa. Các report reference
   trước sửa chiều PG là lịch sử; test phải dùng đáp ứng thiết bị biết trước.
@@ -335,12 +344,12 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
-  Lần chạy internal delay ngày 21/10/2026: 132 test, 126 đạt, 4 skip, 2 lỗi do thiếu
+  Lần chạy tách delay/PG QC ngày 21/10/2026: 142 test, 136 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
   17 test trong `test/test_sentinel1_dce_demo.py` và 6 test trong
   `test/test_range_reference.py` đều đạt. Không nhầm các
   lỗi thiếu fixture S6 này với sai số của demo S4.
-  27 test `test/test_raw_data_analysis.py`, 26 test internal calibration,
+  28 test `test/test_raw_data_analysis.py`, 35 test internal calibration,
   10 test receiver compensation và 10 test
   `test/test_raw_data_correction.py` đều đạt, gồm một test echo S4
   thật so với NumPy oracle; test này chỉ skip nếu thiếu dữ liệu ngoài repo.

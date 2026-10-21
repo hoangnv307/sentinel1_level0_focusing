@@ -21,7 +21,9 @@ delay   = mean(delay_m của các sequence có correlation peak hợp lệ)
   correlation peak khác PG amplitude/phase QC**: không dùng mask chọn PG
   correction hay source extracted/model để loại delay theo amplitude/phase.
 - Adapter hiện kiểm finite/nonzero và peak nằm trong cửa sổ đủ support
-  nominal chirp; sequence lỗi làm adapter báo lỗi, chưa repair/drop tự động.
+  nominal chirp. Đã [tách availability hai nhánh](sentinel1_calibration_availability.md):
+  sequence lỗi reconstruction/peak bị loại có lý do; một peak valid đủ đo
+  delay. Metadata/header hoặc cấu hình sai vẫn là lỗi toàn acquisition.
 - DAD §4.2.2 bước 1 chuyển delay trung bình sang SLC processor để dịch
   chirp/RRF. Tái dựng/dịch **image replica extracted** là nhánh khác, chưa
   được triển khai ở thay đổi này.
@@ -217,8 +219,8 @@ guard kết hợp fractional SWST. Oracle calibration L0 thật bổ sung kiểm
 delay bằng dense Fourier peak search độc lập cho cả hai sequence.
 Suite: **132 test, 126 đạt, 4 skip, 2 lỗi thiếu XML S6 cũ**.
 
-Giới hạn: adapter vẫn yêu cầu calibration đủ/đúng và PG QC hiện có hoàn tất;
-chưa tách reader delay thành đường có thể tiếp tục khi PG correction QC
-không đủ node. Chưa repair/drop sequence lỗi, chưa hỗ trợ hardware delay âm,
+Giới hạn còn lại: chưa repair header/packet/PCC selection lỗi; đã cho phép
+delay tiếp tục khi PG QC không đủ node và loại sequence có peak lỗi với
+báo cáo riêng. Chưa hỗ trợ hardware delay âm,
 chưa chuyển notebook S6 hoặc audit/check scripts sang default nguồn mới;
 chưa chứng minh full IPF parity hay cải thiện radiometry toàn pipeline.

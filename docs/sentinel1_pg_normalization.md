@@ -3,6 +3,9 @@
 Sau báo cáo này đã [nối internal delay L0 vào RRF](sentinel1_internal_delay.md).
 Các lệnh tái chạy bên dưới ghim nguồn delay cũ để tái lập đúng baseline;
 CLI hiện mặc định delay L0.
+Đã [tách delay và PG availability](sentinel1_calibration_availability.md):
+`validate_pg` nay trả QC/source kể cả khi không đủ node; gate >=2 thuộc
+interpolation và caller yêu cầu PG drift.
 
 Thực hiện ngày 21/10/2026, tiếp nối snapshot
 [kiểm kê calibration](sentinel1_pg_calibration.md). Tài liệu này mô tả phiên bản
