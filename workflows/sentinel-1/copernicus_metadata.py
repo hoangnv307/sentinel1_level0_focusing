@@ -14,6 +14,8 @@ from xml.etree import ElementTree as ET
 from sentinel1_processing.utils.copernicus import Client, product_info, write_json
 import check_dce_azimuth_layout as layout
 
+SESSION_FILE = Path.home()/".config/sentinel1/cdse_session.json"
+
 
 def verify(inputs, *, output, block_size_lines=6000, nominal_spacing_s=10, tolerance_s=5e-6):
     """Báo cả hai convention; không fit/chọn model theo kết quả hoặc bỏ file lỗi."""
@@ -92,12 +94,15 @@ def client_from_environment(*, login=False, timeout_s=30):
         username = username or input("CDSE username/email: ").strip()
         password = password or getpass.getpass("CDSE password: ")
         totp = totp or getpass.getpass("OTP nếu bật 2FA (Enter nếu không): ")
-    return Client(access_token=access, username=username, password=password, totp=totp, timeout_s=timeout_s)
+    return Client(access_token=access, username=username, password=password, totp=totp, timeout_s=timeout_s,
+                  session_file=SESSION_FILE if SESSION_FILE.exists() else None)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    login = commands.add_parser("login", help="Nhập mật khẩu ẩn và lưu phiên token ngoài repo (không lưu mật khẩu).")
+    login.add_argument("--session-file", type=Path, default=SESSION_FILE)
     search = commands.add_parser("search", help="Tìm sản phẩm; không cần đăng nhập.")
     search.add_argument("--seed", help="Tên sản phẩm .SAFE làm mốc tìm cùng datatake.")
     search.add_argument("--start")
@@ -121,12 +126,26 @@ def main():
     check.add_argument("--nominal-spacing-s", type=float, default=10)
     check.add_argument("--tolerance-s", type=float, default=5e-6)
     args = parser.parse_args()
+    if args.command == "login":
+        if args.session_file.expanduser().resolve().is_relative_to(Path(__file__).resolve().parents[2]):
+            raise ValueError("File phiên phải ở ngoài repo.")
+        username = os.environ.get("CDSE_USERNAME") or input("CDSE username/email: ").strip()
+        password = os.environ.get("CDSE_PASSWORD") or getpass.getpass("CDSE password: ")
+        totp = os.environ.get("CDSE_TOTP") or getpass.getpass("OTP nếu bật 2FA (Enter nếu không): ")
+        client = Client(username=username, password=password, totp=totp, session_file=args.session_file)
+        try:
+            client.authenticate()
+        finally:
+            client.close()
+        print("Đã lưu phiên CDSE (quyền 600); không lưu mật khẩu.")
+        return 0
     if args.command == "verify":
         report = verify(args.inputs, output=args.output, block_size_lines=args.block_size_lines,
                         nominal_spacing_s=args.nominal_spacing_s, tolerance_s=args.tolerance_s)
         print(json.dumps(report["summary"], ensure_ascii=False))
         return int(report["summary"]["neither_matches"] > 0 or "shared_windows_error" in report)
-    client = client_from_environment(login=args.command == "download" and args.login and not args.dry_run)
+    client = (Client() if args.command == "search" or args.dry_run else
+              client_from_environment(login=args.login))
     try:
         if args.command == "search":
             report = client.search(limit=args.limit, seed=args.seed, start=args.start, stop=args.stop,

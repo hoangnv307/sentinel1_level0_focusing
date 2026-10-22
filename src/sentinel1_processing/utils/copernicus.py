@@ -90,7 +90,7 @@ def write_json(path, value):
 
 class Client:
     def __init__(self, *, access_token=None, username=None, password=None, totp=None,
-                 timeout_s=30, max_file_bytes=16 * 1024 * 1024):
+                 timeout_s=30, max_file_bytes=16 * 1024 * 1024, session_file=None):
         if not math.isfinite(timeout_s) or timeout_s <= 0 or max_file_bytes <= 0:
             raise ValueError("Timeout và giới hạn file phải dương.")
         self.session = requests.Session()
@@ -102,6 +102,20 @@ class Client:
         self.username, self.password, self.totp = username, password, totp
         self.expires_at = math.inf if access_token else 0
         self.timeout_s, self.max_file_bytes = timeout_s, max_file_bytes
+        self.session_file = Path(session_file).expanduser() if session_file else None
+        if self.session_file and self.session_file.exists():
+            metadata = self.session_file.stat()
+            if self.session_file.is_symlink() or metadata.st_mode & 0o077 or metadata.st_uid != os.getuid():
+                raise ValueError("File phiên phải thuộc user hiện tại, quyền 600 và không là symlink.")
+            if not access_token and not (username and password):
+                saved = json.loads(self.session_file.read_text())
+                if (not isinstance(saved, dict) or not isinstance(saved.get("access_token"), str)
+                        or not isinstance(saved.get("refresh_token"), str)
+                        or not isinstance(saved.get("expires_at"), (int, float))
+                        or not math.isfinite(saved["expires_at"])):
+                    raise ValueError("File phiên CDSE không hợp lệ.")
+                self.access_token, self.refresh_token = saved["access_token"], saved["refresh_token"]
+                self.expires_at = time.monotonic() + saved["expires_at"] - time.time() - 30
 
     def close(self):
         self.session.close()
@@ -164,7 +178,16 @@ class Client:
         self.access_token = access
         self.refresh_token = token.get("refresh_token")
         self.expires_at = time.monotonic() + max(0, expires - 30)
+        if self.session_file:
+            if not self.refresh_token:
+                raise RuntimeError("CDSE không trả refresh token để tạo phiên dùng lại.")
+            write_json(self.session_file, {"access_token": access, "refresh_token": self.refresh_token,
+                                           "expires_at": time.time() + expires})
         return access
+
+    def authenticate(self):
+        """Xác thực và lưu token nếu session_file được yêu cầu; không lưu password."""
+        self._token()
 
     def search(self, *, limit=30, **filters):
         if not 1 <= limit <= 1000:

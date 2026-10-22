@@ -165,6 +165,29 @@ class CopernicusTest(unittest.TestCase):
         self.assertNotIn('private-password', str(caught.exception))
         self.assertEqual(self.client.session.request.call_count, 3)
 
+    def test_saved_session_refreshes_without_persisting_password(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory)/'session.json'
+            client = cdse.Client(username='private-user', password='private-password', session_file=path)
+            self.addCleanup(client.close)
+            client.session.request = Mock(return_value=response({
+                'access_token': 'initial', 'refresh_token': 'refresh', 'expires_in': 600}))
+            client.authenticate()
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn('private-password', path.read_text())
+            saved = json.loads(path.read_text());saved['expires_at'] = 0
+            cdse.write_json(path, saved)
+            restored = cdse.Client(session_file=path)
+            self.addCleanup(restored.close)
+            restored.session.request = Mock(return_value=response({
+                'access_token': 'new', 'refresh_token': 'rotated', 'expires_in': 600}))
+            restored.authenticate()
+            self.assertEqual(restored.session.request.call_args.kwargs['data']['grant_type'], 'refresh_token')
+            self.assertEqual(json.loads(path.read_text())['refresh_token'], 'rotated')
+            path.chmod(0o644)
+            with self.assertRaises(ValueError):
+                cdse.Client(session_file=path)
+
     def test_foreign_redirect_and_pagination_do_not_receive_token(self):
         self.client.session.request.return_value = response(status=302, headers={'Location': 'https://example.com/steal'})
         with self.assertRaises(ValueError):
@@ -219,9 +242,9 @@ class CopernicusVerificationTest(unittest.TestCase):
             client = Mock()
             client.plan.return_value = {**plan(), 'metadata_bytes': 100}
             with patch('sys.argv', ['tool', 'download', '--catalogue', str(path), '--directory', directory,
-                                    '--dry-run', '--login']), patch.object(tool, 'client_from_environment', return_value=client) as factory:
+                                    '--dry-run', '--login']), patch.object(tool, 'Client', return_value=client) as factory:
                 self.assertEqual(tool.main(), 0)
-            factory.assert_called_once_with(login=False)
+            factory.assert_called_once_with()
             client.download.assert_not_called()
             self.assertEqual(json.loads((Path(directory)/'download_plan.json').read_text())['products'][0]['status'], 'planned')
 
