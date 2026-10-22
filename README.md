@@ -56,6 +56,9 @@ SEN-TN-52-7445 / MPC-0307, Issue/Revision **2/5**, ngày **17/11/2022**.
   Parseval/support và hai phương án phổ mở rộng được đề xuất để thử nghiệm.
 - [Raw data analysis từ L0](docs/sentinel1_raw_data_analysis.md): API cấu hình
   theo DAD §4.1, significance, 17 test cụ thể và kết quả chạy dữ liệu thật.
+- [Tải annotation qua Copernicus](docs/sentinel1_copernicus_metadata.md): CLI
+  `copernicus_metadata.py search/download/verify`, có dry-run không cần tài
+  khoản; lấy riêng XML/manifest, lưu SHA-256 và kiểm cả hai quy ước tail DCE.
 
 ## Cài đặt
 

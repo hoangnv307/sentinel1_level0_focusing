@@ -109,6 +109,20 @@ cho Sentinel-1.
   `~/sar_data/focusing_data/l1_sm_datatake_annotation/`, là
   metadata tham chiếu, không phải L0 mới hay input pipeline. Nhánh core
   `slice_timeline` lọc center theo product chưa tái tạo được bộ ba mới.
+- [CLI Copernicus metadata](docs/sentinel1_copernicus_metadata.md) dùng OData:
+  `workflows/sentinel-1/copernicus_metadata.py search/download/verify`, client
+  tại `utils/copernicus.py`. Search và download `--dry-run` không cần login;
+  tải thật đọc credential môi trường hoặc `--login` với getpass, không lưu
+  token/mật khẩu vào report/Git. Chỉ tải annotation chính + manifest, cache
+  theo UUID/URL/byte/SHA-256. Verify dùng checker hiện có cho cả hai tail
+  convention, không tự fit; giữ lỗi, nhóm datatake và các cửa sổ chung.
+  Bộ ba metadata hiện nằm ở `~/sar_data/focusing_data/l1_sm_datatake_annotation/`
+  (đã đổi tên thư mục so với khảo sát ban đầu). Đã kiểm live catalogue/dry-run
+  và kết quả tải có xác thực: 3 sản phẩm, 6 file, SHA-256/XML hợp lệ; annotation
+  trùng bản thủ công. Manifest xác nhận IPF 003.91; đủ 3 slice/8 estimate,
+  `last_line` khớp cả 3, có 2 cặp cửa sổ acquisition chung. Refresh token
+  mới kiểm bằng mock. Đây là công cụ chẩn đoán,
+  không đưa L1 vào pipeline L0/AUX.
 
 ## Dữ liệu Sentinel-1 cục bộ
 

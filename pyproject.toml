@@ -12,6 +12,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas",
+    "requests",
     "scipy",
     "sentinel1decoder",
     "tifffile",
