@@ -97,6 +97,18 @@ cho Sentinel-1.
   Luôn ghi mục/phương trình DAD và XML path của tham số khi triển khai.
   Các tham chiếu cũ đến `references/s1a-aux-*.xml` trong code không phản ánh
   nội dung thư mục hiện tại; AUX thực tế nằm trong bộ dữ liệu bên ngoài repo.
+- Đọc [kiểm chứng spacing DCE từ 9 annotation](docs/sentinel1_dce_azimuth_layout.md)
+  trước khi sửa layout: **không dùng preset 3.000 dòng**. Giả thuyết chia sensing
+  span khớp 6 cảnh một slice; bộ 3 sản phẩm cùng datatake bổ sung ngày 22/10
+  cho thấy phải dùng khoảng **start slice kế tiếp − start hiện tại**, giữ
+  estimate chung ở ranh giới. `K=max(1,floor(span/10 s))` vẫn là suy luận.
+  Sáu cảnh S1A khớp tail `after_last_line`, datatake S1C mới khớp `last_line`;
+  chưa rõ nguyên nhân, không tự chọn theo vệ tinh. 10 s chưa là cấu hình IPF xác nhận.
+  Script `check_dce_azimuth_layout.py` lưu fingerprint/residual; chưa đổi core.
+  XML bổ sung nằm ở `~/sar_data/focusing_data/l1_sm_annotation_metadata/` và
+  `~/sar_data/focusing_data/l1_sm_datatake_annotation/`, là
+  metadata tham chiếu, không phải L0 mới hay input pipeline. Nhánh core
+  `slice_timeline` lọc center theo product chưa tái tạo được bộ ba mới.
 
 ## Dữ liệu Sentinel-1 cục bộ
 
