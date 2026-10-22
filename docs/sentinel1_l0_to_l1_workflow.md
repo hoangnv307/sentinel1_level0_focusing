@@ -68,13 +68,17 @@ Ranh giới nguồn dữ liệu của dự án:
   không tinh chỉnh theo L1 rồi gọi là giá trị suy ra từ L0/AUX.
 
 Ngoại lệ nghiên cứu do người dùng yêu cầu: CLI
-`workflows/sentinel-1/estimate_doppler_centroid.py` suy layout DCE từ L1 để
+`workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression` suy layout DCE từ L1 để
 đối chiếu riêng cảnh S4. Việc dùng L1 cho layout/time alignment được ghi
 rõ trong README/JSON; tín hiệu và geometry DC vẫn từ L0. Theo yêu cầu tiếp
 theo, cờ `--l1-input-corrections` còn dùng bias/replica/PG/EAP tính sẵn từ L1
 để chuẩn bị input DCE chẩn đoán; xem README mục tương ứng để biết nguồn,
 quy ước reciprocal PG, support sau bù internal delay và các giới hạn.
 Ngoại lệ này không thay đổi quy tắc nguồn dữ liệu của pipeline tạo SLC.
+
+Luồng CLI mặc định mới là L0/AUX/job độc lập, nhận `--config`; xem
+[trạng thái triển khai S4](sentinel1_s4_dce_implementation.md). Không áp các
+lựa chọn regression trên cho profile mặc định.
 
 ## 2. Sơ đồ phụ thuộc tổng thể
 

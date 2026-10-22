@@ -142,15 +142,15 @@ và quadrature tiếp tục tắt theo AUX; không bật thêm để tìm RMSE t
 
 ```bash
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression \
   --output output/sentinel-1/receiver_compensation/aux_default
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --no-correct-rx-variation \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --no-correct-rx-variation \
   --output output/sentinel-1/receiver_compensation/rx_disabled
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections --l0-raw-analysis \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l1-input-corrections --l0-raw-analysis \
   --output output/sentinel-1/receiver_compensation/reference_l0_bias
 ```
 

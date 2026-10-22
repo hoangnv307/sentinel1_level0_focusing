@@ -59,6 +59,9 @@ SEN-TN-52-7445 / MPC-0307, Issue/Revision **2/5**, ngày **17/11/2022**.
 - [Tải annotation qua Copernicus](docs/sentinel1_copernicus_metadata.md): CLI
   `copernicus_metadata.py login/search/download/verify`, có dry-run không cần tài
   khoản; lấy riêng XML/manifest, lưu SHA-256 và kiểm cả hai quy ước tail DCE.
+- [Kế hoạch cải thiện S4 tới DCE](docs/sentinel1_s4_dce_improvement_plan.md):
+  tách L1, dựng layout theo acquisition context, kiểm geometry/coverage,
+  bổ sung correction và fallback; đã bỏ đề xuất stride 3.000 dòng.
 - [Khảo sát DCE và thời lượng product/datatake](docs/sentinel1_dce_datatake_patterns.md):
   787 annotation từ 2020, 2.243 estimate; lịch theo slice context với khoảng
   danh nghĩa 10 s, hai quy ước tail và khác biệt thời lượng giữa các vệ tinh.
@@ -107,11 +110,27 @@ cũ sau khi Focus hoàn tất để thư mục cache không tăng mãi.
 
 ## Demo Doppler Centroid cho S4/VV
 
+Luồng mặc định hiện nhận L0/AUX và job JSON, không đọc L1 để dựng cấu hình:
+
 ```bash
-MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py --config configs/s4_dce_research.json
 ```
 
-Demo mặc định đọc `~/sar_data/focusing_data/product_1`; có thể đổi bằng
+Có `--preflight-only`, `--orbit-eof`, và comparison sau processing được chọn
+riêng. Output mặc định là `output/sentinel-1/s4_dce_job/doppler_centroid.json`.
+Xem [trạng thái triển khai, cấu hình và giới hạn](docs/sentinel1_s4_dce_implementation.md).
+Profile mẫu là research, dùng AUX nominal FFT/PG absolute, tắt EAP/RSL tường minh.
+Nhánh research đã chạy S4 thật với EAP/RSL và EOF; 200 test gồm 194 đạt,
+6 skip. Strict vẫn dừng nếu yêu cầu Extended Tapered chưa hỗ trợ; chưa tuyên
+bố tương đương IPF. Kết quả, tham số thử nghiệm và giới hạn trong tài liệu trên.
+
+### Profile regression và kết quả S4 trước đây
+
+```bash
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression
+```
+
+Profile regression đọc `~/sar_data/focusing_data/product_1`; có thể đổi bằng
 `--product <thư-mục>` và `--output <thư-mục>`. Kết quả là
 `output/sentinel-1/product_1_dce/doppler_centroid.json` và biểu đồ
 `doppler_centroid.png`. Dữ liệu range-compressed tạm dùng memmap, tự xóa sau
@@ -201,7 +220,7 @@ demo; RMSE với L1 là phép so sánh khác. Kết quả nằm trong `output/` 
 Theo yêu cầu dùng các giá trị tính sẵn để chuẩn bị input đầy đủ hơn, chạy:
 
 ```bash
-MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections
+MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l1-input-corrections
 ```
 
 Kết quả được ghi riêng tại `output/sentinel-1/product_1_dce_l1_input/`,

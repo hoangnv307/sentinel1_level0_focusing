@@ -170,7 +170,7 @@ MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
   --output output/sentinel-1/calibration_availability/healthy
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l0-pg-drift \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l0-pg-drift \
   --minimum-far-range-discard-samples 25 \
   --output output/sentinel-1/calibration_availability/dce_healthy_pg
 ```

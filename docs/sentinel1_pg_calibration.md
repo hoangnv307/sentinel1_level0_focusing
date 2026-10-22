@@ -216,15 +216,15 @@ MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
   workflows/sentinel-1/analyze_calibration.py
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l0-pg-drift \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l0-pg-drift \
   --output output/sentinel-1/pg_calibration/dce_l0_pg
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections --l0-raw-analysis \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l1-input-corrections --l0-raw-analysis \
   --output output/sentinel-1/pg_calibration/dce_reference_pg
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections --l0-raw-analysis --l0-pg-drift \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l1-input-corrections --l0-raw-analysis --l0-pg-drift \
   --output output/sentinel-1/pg_calibration/dce_reference_l0_pg
 ```
 

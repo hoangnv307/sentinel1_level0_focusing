@@ -176,10 +176,10 @@ MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
 MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
   -m unittest discover -s test -p 'test_raw_data_analysis.py'
 MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression \
   --output output/sentinel-1/raw_analysis/dce_basic_global_bias
 MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l1-input-corrections \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l1-input-corrections \
   --l0-raw-analysis --output output/sentinel-1/raw_analysis/dce_reference_l0_bias
 ```
 

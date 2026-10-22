@@ -189,18 +189,18 @@ MPLBACKEND=Agg /home/xiaoxin/python_envs/sentinel1/bin/python \
 
 # Hai lượt cùng default correction, cùng PG, chỉ đổi delay.
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l0-pg-drift \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l0-pg-drift \
   --internal-delay-source none --minimum-far-range-discard-samples 25 \
   --output output/sentinel-1/internal_delay/default_none
 
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py --l0-pg-drift \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression --l0-pg-drift \
   --minimum-far-range-discard-samples 25 \
   --output output/sentinel-1/internal_delay/default_l0
 
 # Reference pair: chạy lần lượt với source l1 rồi l0 và output tương ứng.
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression \
   --l1-input-corrections --l0-raw-analysis --l0-pg-drift \
   --internal-delay-source l1 --minimum-far-range-discard-samples 25 \
   --output output/sentinel-1/internal_delay/reference_l1

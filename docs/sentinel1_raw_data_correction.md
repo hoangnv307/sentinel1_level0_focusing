@@ -108,7 +108,7 @@ Giữ mặc định AUX (bias=true, gain=false, quadrature=false):
 
 ```bash
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression \
   --no-correct-rx-variation \
   --output output/sentinel-1/raw_correction/aux_default
 ```
@@ -117,7 +117,7 @@ Bật cả ba hiệu chỉnh để đối chứng:
 
 ```bash
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=2 /home/xiaoxin/python_envs/sentinel1/bin/python \
-  workflows/sentinel-1/estimate_doppler_centroid.py \
+  workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression \
   --no-correct-rx-variation \
   --correct-iq-gain --correct-iq-quadrature \
   --output output/sentinel-1/raw_correction/all_enabled

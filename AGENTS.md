@@ -97,6 +97,15 @@ cho Sentinel-1.
   Luôn ghi mục/phương trình DAD và XML path của tham số khi triển khai.
   Các tham chiếu cũ đến `references/s1a-aux-*.xml` trong code không phản ánh
   nội dung thư mục hiện tại; AUX thực tế nằm trong bộ dữ liệu bên ngoài repo.
+- [Kế hoạch S4 tới DCE cập nhật](docs/sentinel1_s4_dce_improvement_plan.md)
+  đã có nhánh research chạy hết S4 thật với EAP/RSL và EOF; xem
+  [bằng chứng, nghiệm thu và giới hạn](docs/sentinel1_s4_dce_implementation.md).
+  CLI mặc định nhận `--config configs/s4_dce_research.json`, L0/AUX/job độc lập;
+  các cờ L1 cũ chỉ thuộc `--profile l1-regression`. Không tuyên bố pipeline
+  tương đương IPF: Extended Tapered chưa xác nhận, DEM thật và context IPF
+  chưa có. Giữ layout acquisition context; không quay lại stride 3.000.
+  Context IPF chưa chắc suy được từ L0 hiện có: yêu cầu nguồn L0/job hoặc
+  profile nghiên cứu có nhãn; không lấy sliceList L1 làm processing input.
 - Đọc [khảo sát 787 annotation từ 2020](docs/sentinel1_dce_datatake_patterns.md)
   trước khi sửa layout; [khảo sát 9 XML ban đầu](docs/sentinel1_dce_azimuth_layout.md)
   giữ lại lịch sử kiểm chứng. **Không dùng preset 3.000 dòng**. Cả 2.243 record
@@ -217,8 +226,8 @@ LUT, timing hoặc kích thước ảnh từ L1 đưa ngược vào pipeline t�
 
 **Ngoại lệ có phạm vi:** người dùng yêu cầu suy cấu hình DCE từ L1, sau đó
 dùng các hiệu chỉnh input tính sẵn cho demo
-`workflows/sentinel-1/estimate_doppler_centroid.py`. Demo mặc định chỉ suy
-layout/time alignment; bias mặc định đo từ toàn echo L0 hợp lệ, dùng chung
+`workflows/sentinel-1/estimate_doppler_centroid.py --profile l1-regression`.
+Chỉ profile regression này suy layout/time alignment; bias mặc định đo từ toàn echo L0 hợp lệ, dùng chung
 hai chunk. Cờ `--l1-input-corrections` còn dùng bias, replica gain,
 PG tương đối và bank EAP từ L1; nominal chirp và receiver variation từ AUX_INS, RSL theo
 DAD. DC vẫn đo từ echo L0, geometry từ ephemeris L0; không dùng polynomial
@@ -299,8 +308,9 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
 
 - `workflows/sentinel-1/` — Sentinel-1 marimo workflows (cells as `@app.cell`).
 - `workflows/sentinel-1/estimate_doppler_centroid.py` — demo CLI S4/VV, chạy
-  bằng Python thường; không phải notebook marimo. Suy layout theo ngoại lệ L1
-  nêu trên, xuất JSON/PNG; dùng memmap tạm để giới hạn RAM.
+  bằng Python thường; không phải notebook marimo. Mặc định L0/AUX/job độc lập,
+  xuất processing JSON và comparison riêng; dùng memmap tạm để giới hạn RAM.
+  Ngoại lệ layout/correction L1 và PNG chỉ thuộc `--profile l1-regression`.
 - `src/sentinel1_processing/utils/dce_reference_input.py` — chuẩn bị input
   DCE chẩn đoán từ L1/AUX theo cờ CLI; không tự áp vào pipeline focus.
 - `workflows/radarsat-1/` — RADARSAT-1 command-line workflows.
@@ -381,6 +391,8 @@ phải xác định lại từ L0/AUX tương ứng trước khi xử lý S4.
   vì một ablation hoặc cửa sổ quan sát khác cho RMSE với L1 thấp hơn.
 
 - Tests use `unittest` classes (not pytest fixtures), với `MPLBACKEND=Agg`.
+  Lần kiểm kế hoạch S4 ngày 22/10/2026: **200 test: 194 đạt, 6 integration skip**;
+  các kết quả thiếu fixture S6 ở dưới là lịch sử, đã tách skip cho dữ liệu thật.
   Lần chạy tách delay/PG QC ngày 21/10/2026: 142 test, 136 đạt, 4 skip, 2 lỗi do thiếu
   annotation S6 cũ `references/s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml`.
   17 test trong `test/test_sentinel1_dce_demo.py` và 6 test trong
