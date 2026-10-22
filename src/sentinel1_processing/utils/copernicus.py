@@ -41,7 +41,7 @@ def utc(value):
 
 
 def search_filter(*, start=None, stop=None, seed=None, satellite=None, swath=None, polarisation=None):
-    """Seed giới hạn cùng mission/orbit/datatake/swath, trong ±2 giờ quanh seed."""
+    """Seed giới hạn mission/datatake/swath trong ±2 giờ; datatake có thể qua orbit."""
     if satellite not in (None, "S1A", "S1B", "S1C", "S1D"):
         raise ValueError("Satellite không hợp lệ.")
     if swath not in (None, *(f"S{i}" for i in range(1, 7))):
@@ -57,7 +57,7 @@ def search_filter(*, start=None, stop=None, seed=None, satellite=None, swath=Non
         instant = datetime.strptime(info["start"], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
         start = start or (instant - timedelta(hours=2)).isoformat()
         stop = stop or (instant + timedelta(hours=2)).isoformat()
-        parts.append(f"contains(Name,'_{info['orbit']}_{info['datatake']}_')")
+        parts.append(f"contains(Name,'_{info['datatake']}_')")
     if not start or not stop or utc(start) >= utc(stop):
         raise ValueError("Cần start < stop, hoặc seed để suy khoảng tìm kiếm.")
     parts.extend([f"ContentDate/Start ge {utc(start).isoformat().replace('+00:00', 'Z')}",
@@ -193,6 +193,7 @@ class Client:
         if not 1 <= limit <= 1000:
             raise ValueError("Limit phải trong khoảng 1–1000.")
         expression = search_filter(**filters)
+        seed_info=product_info(filters['seed']) if filters.get('seed') else None
         params = {"$filter": expression, "$select": "Id,Name,Online,S3Path,ContentLength,ContentDate,PublicationDate",
                   "$orderby": "ContentDate/Start asc", "$top": min(100, limit + 1)}
         url, products, seen = CATALOGUE, [], set()
@@ -204,7 +205,9 @@ class Client:
                 page = response.json()
             values = page["value"]
             for product in values:
-                product_info(product["Name"])
+                info=product_info(product["Name"])
+                if seed_info and any(info[k]!=seed_info[k] for k in ('mission','swath','datatake')):
+                    continue
                 product["Id"] = str(UUID(product["Id"]))
                 if product["Id"] not in {p["Id"] for p in products}:
                     products.append(product)

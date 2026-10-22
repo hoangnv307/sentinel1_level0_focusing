@@ -169,9 +169,10 @@ def shared_windows(results, *, time_tolerance_s):
     found = []
     for left in results:
         for right in results:
-            identity = ("mission", "absolute_orbit", "datatake_id", "swath", "polarisation")
+            identity = ("mission", "datatake_id", "swath", "polarisation")
             if (any(left[k] is None or left[k] != right[k] for k in identity)
-                    or right["slice_number"] != left["slice_number"] + 1):
+                    or right["slice_number"] != left["slice_number"] + 1
+                    or left['slice_context'][0]['start'] != right['slice_context'][0]['start']):
                 continue
             if left["slice_context"] != right["slice_context"]:
                 raise ValueError("Các sản phẩm cùng datatake có slice context khác nhau.")

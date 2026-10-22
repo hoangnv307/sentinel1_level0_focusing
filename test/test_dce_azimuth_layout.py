@@ -125,6 +125,8 @@ class DceAzimuthLayoutTest(unittest.TestCase):
                     other = layout.analyze_annotation(path, azimuth_block_size_lines=6000,
                         nominal_spacing_s=10, time_tolerance_s=5e-6, tail_stop_convention='after_last_line')
                     self.assertFalse(other['matches'])
+            results[1]['absolute_orbit']='101'
+            results[2]['absolute_orbit']='101'
             shared = layout.shared_windows(results, time_tolerance_s=5e-6)
             self.assertEqual(len(shared), 2)
             self.assertEqual([(p['left_record'], p['right_record']) for p in shared], [(2, 0), (2, 0)])

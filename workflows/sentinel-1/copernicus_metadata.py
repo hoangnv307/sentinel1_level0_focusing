@@ -1,7 +1,6 @@
 """Tìm, tải metadata Stripmap SLC từ CDSE và kiểm chứng giả thuyết lịch DCE."""
 
 import argparse
-from collections import Counter
 from datetime import datetime, timezone
 import getpass
 import json
@@ -65,7 +64,7 @@ def verify(inputs, *, output, block_size_lines=6000, nominal_spacing_s=10, toler
         report["shared_windows_error"] = str(error)
     # Một annotation chỉ được đếm một lần dù cả hai convention cùng khớp ở slice chưa cuối.
     report["summary"] = {"annotations": len(paths), "datatakes": len({
-        (r["mission"], r["absolute_orbit"], r["datatake_id"]) for r in rows}),
+        (r["mission"], r["datatake_id"],r['slice_context'][0]['start']) for r in rows}),
         "matching_annotations_by_convention": {c: sum(e["conventions"][c]["matches"] for e in report["annotations"])
                                               for c in ("last_line", "after_last_line")},
         "neither_matches": sum(not any(v["matches"] for v in e["conventions"].values())
@@ -73,13 +72,14 @@ def verify(inputs, *, output, block_size_lines=6000, nominal_spacing_s=10, toler
         "shared_windows": len(report["shared_acquisition_windows"])}
     groups = {}
     for row in rows:
-        key = (row["mission"], row["absolute_orbit"], row["datatake_id"], row["swath"], row["polarisation"])
+        key = (row["mission"], row["datatake_id"], row["swath"], row["polarisation"],row['slice_context'][0]['start'])
         groups.setdefault(key, []).append(row)
     report["datatake_groups"] = []
-    for (mission, orbit, datatake, swath, pol), group in sorted(groups.items(), key=lambda p: str(p[0])):
+    for (mission, datatake, swath, pol, anchor), group in sorted(groups.items(), key=lambda p: str(p[0])):
         expected = {s["number"] for row in group for s in row["slice_context"]}
         present = {row["slice_number"] for row in group}
-        report["datatake_groups"].append({"mission": mission, "orbit": orbit, "datatake_id": datatake,
+        report["datatake_groups"].append({"mission": mission, "orbits":sorted({r['absolute_orbit'] for r in group}),
+            "datatake_id": datatake,'context_start':anchor,
             "swath": swath, "polarisation": pol, "annotations": len(group),
             "observed_dc_records": sum(len(row["acquisition_windows"]) for row in group),
             "slice_numbers": sorted(present), "missing_slices_from_context": sorted(expected - present)})
@@ -150,10 +150,12 @@ def main():
         if args.command == "search":
             report = client.search(limit=args.limit, seed=args.seed, start=args.start, stop=args.stop,
                                    satellite=args.satellite, swath=args.swath, polarisation=args.polarisation)
-            groups = Counter((p["Name"].split("_")[0], product_info(p["Name"])["orbit"],
-                              product_info(p["Name"])["datatake"]) for p in report["products"])
-            report["datatakes"] = [{"mission": m, "orbit": o, "datatake": d, "products": n}
-                                    for (m, o, d), n in sorted(groups.items())]
+            groups = {}
+            for product in report['products']:
+                info=product_info(product['Name'])
+                groups.setdefault((info['mission'],info['swath'],info['datatake']),[]).append(info)
+            report["datatakes"] = [{"mission": m, "swath": s, "datatake": d, "products": len(group),
+                "orbits":sorted({i['orbit'] for i in group})} for (m,s,d),group in sorted(groups.items())]
             write_json(args.output, report)
             print(f"Tìm thấy {len(report['products'])} sản phẩm, {len(groups)} datatake; truncated={report['truncated']}.")
             return 0

@@ -69,7 +69,8 @@ class CopernicusTest(unittest.TestCase):
 
     def test_seed_filter_and_input_validation(self):
         expression = cdse.search_filter(seed=NAME, polarisation='HH')
-        self.assertIn("_001674_002C4C_", expression)
+        self.assertIn("_002C4C_", expression)
+        self.assertNotIn("_001674_", expression)
         self.assertIn("2025-03-30T16:04:12Z", expression)
         self.assertIn("_1SDH_", expression)
         for options in [{'seed': '../'+NAME}, {'seed': NAME, 'swath': 'S4'},
@@ -88,6 +89,15 @@ class CopernicusTest(unittest.TestCase):
         self.assertTrue(result['truncated'])
         self.assertEqual(len(result['products']), 2)
         self.assertTrue(all(call.kwargs['headers'] == {} for call in self.client.session.request.call_args_list))
+
+    def test_seed_substring_does_not_confuse_orbit_with_datatake(self):
+        seed=NAME.replace('001674_002C4C','000123_000123')
+        wrong=seed.replace('_000123_A098','_000124_A098')
+        self.client.session.request.return_value=response({'value':[
+            {'Id':'00000000-0000-0000-0000-000000000001','Name':wrong,'Online':True},
+            {'Id':UID,'Name':seed,'Online':True}]})
+        result=self.client.search(seed=seed)
+        self.assertEqual([p['Id'] for p in result['products']],[UID])
 
     def test_plan_only_selects_manifest_and_matching_main_annotation(self):
         self.client.session.request.side_effect = [response({'result': [
