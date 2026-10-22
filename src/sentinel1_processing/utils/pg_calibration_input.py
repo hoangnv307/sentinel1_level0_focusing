@@ -14,10 +14,11 @@ from ..pre_processing.internal_calibration import (
 SIGNALS = {8: "TxCal", 9: "RxCal", 10: "EpdnCal", 11: "TaCal", 12: "ApdnCal", 15: "TxHCalIso"}
 
 
-def read_configuration(product):
+def read_configuration(product, selected_paths=None):
     roots, paths = [], []
     for kind in ("ins", "pp1"):
-        matches = list(Path(product).glob(f"auxiliary/*/data/s1a-aux-{kind}.xml"))
+        matches = ([Path(selected_paths[kind.upper()])] if selected_paths is not None else
+                   list(Path(product).glob(f"auxiliary/*/data/s1a-aux-{kind}.xml")))
         if len(matches) != 1:
             raise ValueError(f"Cần đúng một AUX_{kind.upper()}.")
         paths.append(str(matches[0]))
@@ -60,8 +61,8 @@ def read_configuration(product):
             "delta_t_suppr_s": float(ins.findtext("deltaTSuppr"))}
 
 
-def analyze_calibration(level0, product, *, oversampling_factor, denominator_relative_floor):
-    """No L1 input; return selected acquisition times, relative PG correction, report.
+def analyze_calibration(level0, product, *, oversampling_factor, denominator_relative_floor, selected_auxiliary_paths=None, output_normalization="relative"):
+    """No L1 input; return selected acquisition times, chosen PG correction, report.
 
     PGref/PGcal uses the nominal 1/N reference (Calibration Plan 8.1).
     Reports delay and PG availability independently; consumers enforce their needs.
@@ -69,7 +70,10 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
     """
     if not Path(level0.filename).name.startswith("s1a-s4-raw-s-vv-"):
         raise ValueError("Adapter calibration này chỉ hỗ trợ sản phẩm S1A/S4/VV hiện tại.")
-    configuration = read_configuration(product)
+    if output_normalization not in ("relative","absolute"):
+        raise ValueError("PG output_normalization phải là relative hoặc absolute.")
+    configuration = (read_configuration(product) if selected_auxiliary_paths is None else
+                     read_configuration(product, selected_auxiliary_paths))
     if (not isinstance(oversampling_factor, (int, np.integer)) or isinstance(oversampling_factor, bool)
             or oversampling_factor < 2):
         raise ValueError("oversampling_factor phải là số nguyên >=2.")
@@ -246,6 +250,8 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
               "nodes": nodes, "quality": quality, "image_rx_mean_powers": image_rx_powers,
               "selected_times_gps_s": np.array(node_times)[selected].tolist(),
               "relative_corrections": np.column_stack((relative.real, relative.imag)).tolist(),
+              "selected_pg_corrections": np.column_stack((chosen[selected].real,chosen[selected].imag)).tolist(),
+              "output_normalization": output_normalization,
               "pg_reference_function": {"source": "nominal PG chirp from L0, DAD 4-25 / Calibration Plan 8.1 9.2-14",
                                         "chirp_parameters_from_l0": chirp_parameters,
                                         "sample_count": len(reference), "amplitude": float(abs(reference[0])),
@@ -261,7 +267,8 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
                                       "denominator_relative_floor": denominator_relative_floor},
               "absolute_radiometric_scale_recovered": False,
               "limitations": ["PG model units follow the nominal 1/N calibration reference; end-to-end radiometric parity is not verified against IPF.",
-                              "DCE still applies relative drift only; no absolute radiometric correction is enabled.",
+                              ("Returned corrections retain PGref/PGcal absolute scale; whole-chain IPF radiometry remains unverified."
+                               if output_normalization=="absolute" else "Returned corrections are relative drift only."),
                               "Only constant AUX PG model is supported without an L0-derived ascending-node epoch."]}
     echoes = [r for r in inventory if r["signal_code"] == 0]
     if echoes:
@@ -269,4 +276,4 @@ def analyze_calibration(level0, product, *, oversampling_factor, denominator_rel
         report["echo_time_span_gps_s"] = span
         selected_times = np.array(node_times)[selected]
         report["echo_coverage_without_extrapolation"] = bool(quality["interpolation_available"] and selected_times[0] <= span[0] and selected_times[-1] >= span[1])
-    return np.array(node_times)[selected], relative, report
+    return np.array(node_times)[selected], (chosen[selected] if output_normalization=="absolute" else relative), report

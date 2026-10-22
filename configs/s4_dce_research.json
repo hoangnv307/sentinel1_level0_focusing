@@ -1,0 +1,39 @@
+{
+  "mode": "research",
+  "layout": {
+    "policy": "l0_support",
+    "block_size_lines": 6000,
+    "num_range_blocks": 20,
+    "range_block_size_samples": 1000,
+    "nominal_spacing_s": 10,
+    "tail_stop_convention": "after_last_line",
+    "mapping_tolerance_s": 4e-05,
+    "continuity_tolerance_s": 4e-05,
+    "missing_support_policy": "error"
+  },
+  "estimator": {
+    "unwrap_fft_length": 4096,
+    "polynomial_degree": 2,
+    "outlier_sigma": 3.5,
+    "max_fit_iterations": 5,
+    "unwrap_weighting": "coherence",
+    "fit_weighting": "uniform",
+    "accc_range_weighting": "power"
+  },
+  "corrections": {
+    "apply_eap": false,
+    "apply_rsl": false,
+    "rrf_spectrum": "aux_nominal_fft"
+  },
+  "batch_lines": 256,
+  "minimum_far_range_discard_samples": 0,
+  "calibration": {
+    "oversampling_factor": 16,
+    "denominator_relative_floor": 0.0,
+    "output_normalization": "absolute"
+  },
+  "geometry": {
+    "n_control_points": 9,
+    "quaternion_norm_tolerance": 0.001
+  }
+}

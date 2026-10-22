@@ -59,10 +59,10 @@ def plot_comparisons(comparisons):
             zorder=4,
             label=f"Rejected points ({np.count_nonzero(~used)})",
         )
-        axis.set_title(
-            f'DCE {result["record"]}: RMSE={result["rmse_hz"]:.3f} Hz, '
-            f'fit RMS={result["fit_rms_hz"]:.3f} Hz'
-        )
+        rms=result["fit_rms_hz"]
+        rms_label="n/a" if rms is None or not np.isfinite(rms) else f"{rms:.3f} Hz"
+        axis.set_title(f'DCE {result["record"]}: RMSE={result["rmse_hz"]:.3f} Hz, fit RMS={rms_label}; '
+                       f'source={result.get("selected_source","data")}')
         axis.set_xlabel("Slant-range time [ms]")
         axis.set_ylabel("Doppler centroid [Hz]")
         axis.grid(True, alpha=0.3)

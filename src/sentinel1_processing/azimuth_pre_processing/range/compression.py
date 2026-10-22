@@ -62,6 +62,33 @@ def extract_valid_samples(
     raise ValueError("output must be 'valid', 'slc', or 'same'.")
 
 
+def slc_support(n_range, *, sample_rate_hz, pulse_length_s, slant_range_origin_s,
+                swst_bias_s, range_time_shift_s, internal_delay_s, minimum_far_range_discard_samples):
+    """Miền SLC hợp lệ sau matched filter và các phase ramp; không đọc/FFT echo."""
+    if (isinstance(n_range,bool) or not isinstance(n_range,(int,np.integer)) or n_range<2
+            or not np.isfinite([sample_rate_hz,pulse_length_s,slant_range_origin_s,swst_bias_s,
+                               range_time_shift_s,internal_delay_s]).all()
+            or sample_rate_hz<=0 or pulse_length_s<=0 or internal_delay_s<0
+            or abs(range_time_shift_s)>.5/sample_rate_hz):
+        raise ValueError("SLC range support parameters không hợp lệ.")
+    if (isinstance(minimum_far_range_discard_samples,bool)
+            or not isinstance(minimum_far_range_discard_samples,(int,np.integer))
+            or minimum_far_range_discard_samples<0):
+        raise ValueError("Minimum far guard phải là số nguyên không âm.")
+    pulse_samples=int(np.ceil(pulse_length_s*sample_rate_hz))
+    n_valid=n_range-pulse_samples
+    advance=(internal_delay_s+range_time_shift_s)*sample_rate_hz
+    required=max(0,int(np.ceil(advance-1e-8)))
+    discard=max(required,minimum_far_range_discard_samples)
+    stop=n_valid-discard
+    if stop<2:
+        raise ValueError("Không đủ range support sau compression/delay/guard.")
+    tau=range_processing.swst_bias.correct(slant_range_origin_s+np.arange(n_range)/sample_rate_hz,swst_bias_s)
+    return {"raw_times_s":tau,"range_times_s":tau[:stop]+range_time_shift_s,
+        "n_valid":n_valid,"stop_sample":stop,"far_throwaway":discard,"required_far_discard":required,
+        "pulse_samples":pulse_samples}
+
+
 def compress(
     radar_data,
     raw_slant_range_times_s,
@@ -142,4 +169,5 @@ __all__ = [
     "inverse_fft",
     "extract_valid_samples",
     "compress",
+    "slc_support",
 ]

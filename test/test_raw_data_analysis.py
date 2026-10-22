@@ -328,7 +328,12 @@ class RawDataSelectionTest(unittest.TestCase):
           <product><productId>WRONG</productId></product><product><productId>SM_SL1__1</productId>
             <dcProcParams><dcMethod>Data Analysis</dcMethod><dcInputData>Range Compressed</dcInputData>
               <dcRmsErrorThreshold>20</dcRmsErrorThreshold></dcProcParams>
-            <commonProcParams><correctIQBiasFlag>true</correctIQBiasFlag>
+            <slcProcParams><applyElevationAntennaPatternFlag>true</applyElevationAntennaPatternFlag>
+              <applyRangeSpreadingLossFlag>true</applyRangeSpreadingLossFlag><rrfSpectrum>Extended Tapered</rrfSpectrum></slcProcParams>
+            <preProcParams><performInternalCalibrationFlag>true</performInternalCalibrationFlag></preProcParams>
+            <commonProcParams><ellipsoidParams><ellipsoidSemiMajorAxis>6378137</ellipsoidSemiMajorAxis>
+              <ellipsoidSemiMinorAxis>6356752.314245</ellipsoidSemiMinorAxis></ellipsoidParams>
+              <correctIQBiasFlag>true</correctIQBiasFlag>
               <correctIQGainImbalanceFlag>false</correctIQGainImbalanceFlag>
               <correctIQOrthogonalityFlag>false</correctIQOrthogonalityFlag>
               <correctRxVariationFlag>true</correctRxVariationFlag>
@@ -420,6 +425,21 @@ class RawDataSelectionTest(unittest.TestCase):
             _, _, _, diagnostics = demo.compress_echoes(self.level0, aux, tmp, internal_delay_s=1.8/fs)
         self.assertEqual([d["hardware_delay_far_throwaway_samples"] for d in diagnostics], [2, 3])
 
+    def test_independent_range_gain_is_applied_after_compression_on_corrected_range_axis(self):
+        aux=dict(correct_iq_bias=False,correct_iq_gain=False,correct_iq_quadrature=False,
+                 correct_rx_variation=False,swst_bias_s=0.)
+        grids=[]
+        def factory(tau):
+            grids.append(tau.copy())
+            return lambda eta:np.full((len(eta),len(tau)),2j)
+        with TemporaryDirectory() as folder,patch.object(demo.sentinel1decoder,'Level0Decoder',return_value=self.decoder):
+            baseline,_,_,_=demo.compress_echoes(self.level0,aux,folder,internal_delay_s=0.)
+            expected=[segment.range_compressed.copy() for segment in baseline]
+            corrected,_,_,_=demo.compress_echoes(self.level0,aux,folder,internal_delay_s=0.,range_gain_factory=factory)
+            for segment,reference,tau in zip(corrected,expected,grids):
+                np.testing.assert_allclose(segment.range_compressed,2j*reference)
+                np.testing.assert_allclose(segment.slant_range_times_s,tau)
+
 
 class CalibrationConsumerTest(unittest.TestCase):
     def test_cli_only_requires_requested_calibration_and_saves_report_before_failure(self):
@@ -437,7 +457,7 @@ class CalibrationConsumerTest(unittest.TestCase):
                 report = {"internal_delay": {"available": delay_available, "mean_s": 1e-7 if delay_available else None},
                           "quality": {"interpolation_available": pg_available},
                           "nodes": [{"replica_rejection_reason": None if delay_available else "No valid peak"}]}
-                argv = ["demo", "--product", str(product), "--output", str(output), "--internal-delay-source", delay_source]
+                argv = ["demo", "--profile", "l1-regression", "--product", str(product), "--output", str(output), "--internal-delay-source", delay_source]
                 if enable_pg:
                     argv.append("--l0-pg-drift")
                 with patch("sys.argv", argv), patch.object(demo, "read_auxiliary", return_value={}), \

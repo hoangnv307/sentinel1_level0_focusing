@@ -37,4 +37,10 @@ def rgdec9_stage3_rx_samples(swl_code):
     )
 
 
-__all__ = ["stage3_rx_samples", "rgdec9_stage3_rx_samples"]
+__all__ = ["stage3_rx_samples", "rgdec9_stage3_rx_samples", "rgdec5_stage3_rx_samples"]
+
+
+def rgdec5_stage3_rx_samples(swl_code):
+    """S4 RGDEC 5, PDU issue 13 Tables 5.1-1/2: L/M=3/8, offset=92."""
+    return stage3_rx_samples(swl_code, interpolation_factor=3, decimation_factor=8,
+        filter_output_offset=92, remainder_corrections=(0, 1, 1, 1, 2, 2, 3, 3))

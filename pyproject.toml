@@ -18,6 +18,9 @@ dependencies = [
     "tifffile",
 ]
 
+[project.optional-dependencies]
+dem = ["rasterio>=1.3,<2"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

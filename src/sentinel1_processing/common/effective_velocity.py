@@ -70,6 +70,11 @@ class Estimator:
             raise ValueError("velocities_ecef_mps must have shape (N, 3).")
         if np.any(np.diff(self.orbit_times_s) <= 0):
             raise ValueError("orbit_times_s must be strictly increasing.")
+        if (not np.isfinite(self.orbit_times_s).all() or not np.isfinite(self.positions_ecef_m).all()
+                or not np.isfinite(self.velocities_ecef_mps).all() or not np.isfinite(self.wavelength_m)
+                or self.wavelength_m<=0 or not np.isfinite([self.a_m,self.b_m]).all()
+                or not 0<self.b_m<=self.a_m):
+            raise ValueError("Orbit values, wavelength and ellipsoid axes must be finite and valid.")
 
         self._position_polynomials = None
         self._position_spline = None
@@ -123,6 +128,10 @@ class Estimator:
             ephemeris["Z-axis velocity ECEF"].to_numpy(dtype=float),
         ])
 
+        for epoch in np.unique(t):
+            same=t==epoch
+            if not np.all(p[same]==p[same][0]) or not np.all(v[same]==v[same][0]):
+                raise ValueError("Conflicting orbit state vectors at the same timestamp.")
         keep = np.unique(t, return_index=True)[1]
         t, p, v = t[keep], p[keep], v[keep]
 
@@ -148,12 +157,12 @@ class Estimator:
         """Require azimuth times to lie within the allowed orbit interval."""
         times = np.asarray(azimuth_times_s, dtype=np.float64)
         tolerance = float(max_extrapolation_s)
-        if times.ndim != 1 or times.size == 0:
-            raise ValueError("azimuth_times_s must be a non-empty 1-D array.")
+        if times.ndim != 1 or times.size == 0 or not np.isfinite(times).all():
+            raise ValueError("azimuth_times_s must be a finite non-empty 1-D array.")
         if np.any(np.diff(times) <= 0):
             raise ValueError("azimuth_times_s must be strictly increasing.")
-        if tolerance < 0:
-            raise ValueError("max_extrapolation_s must be non-negative.")
+        if not np.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("max_extrapolation_s must be finite and non-negative.")
         if (
             times[0] < self.orbit_times_s[0] - tolerance
             or times[-1] > self.orbit_times_s[-1] + tolerance

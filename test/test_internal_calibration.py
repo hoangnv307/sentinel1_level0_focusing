@@ -409,6 +409,12 @@ class RealCalibrationTest(unittest.TestCase):
         np.testing.assert_allclose(correction, [1., oracle], rtol=2e-5)
         expected = complex(*report["configuration"]["pg_reference"])/peak
         np.testing.assert_allclose(complex(*report["nodes"][1]["normalized_pg_correction"]), expected, rtol=2e-5)
+        absolute_times,absolute_corrections,absolute_report=analyze_calibration(level0,PRODUCT,
+            oversampling_factor=16,denominator_relative_floor=0.,output_normalization="absolute")
+        np.testing.assert_array_equal(absolute_times,times)
+        np.testing.assert_allclose(absolute_corrections[-1],expected,rtol=2e-5)
+        np.testing.assert_allclose(absolute_corrections/absolute_corrections[0],correction,rtol=1e-12)
+        self.assertEqual(absolute_report["output_normalization"],"absolute")
         self.assertTrue(.85 < abs(expected) < .90)
         self.assertGreater(np.angle(correction[-1]), 0)
         self.assertEqual(report["quality"]["valid"], [True, True])

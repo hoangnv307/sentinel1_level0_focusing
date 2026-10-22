@@ -32,29 +32,35 @@ def compare(record, annotated):
     polynomial = np.fromstring(annotated.findtext("dataDcPolynomial"), sep=" ")
     geom = np.fromstring(annotated.findtext("geometryDcPolynomial"), sep=" ")
     x = tau[common] - float(annotated.findtext("t0"))
-    residual = record.fine_baseband_hz[common] - ref
+    residual=np.empty(0)
+    if record.fine_baseband_hz.size==tau.size:
+        fine=record.fine_baseband_hz[common]
+        finite=np.isfinite(fine)&np.isfinite(ref)
+        residual=fine[finite]-ref[finite]
     fitted = record.evaluate(tau[common]) - np.polynomial.polynomial.polyval(x, polynomial)
-    geom_residual = np.polynomial.polynomial.polyval(
-        tau[common] - record.t0_s, record.geometry_dc_polynomial
-    ) - np.polynomial.polynomial.polyval(x, geom)
+    geom_residual=(None if record.geometry_dc_polynomial is None else np.polynomial.polynomial.polyval(
+        tau[common]-record.t0_s,record.geometry_dc_polynomial)-np.polynomial.polynomial.polyval(x,geom))
+    from sentinel1_processing.utils.dce_job import real_values
+    coherence=record.coherence[np.isfinite(record.coherence)]
     return {
         "start_line": record.block.start_line, "stop_line": record.block.stop_line,
         "acquisition_center_gps_s": record.block.azimuth_time_s,
         "compared_range_points": int(common.sum()),
-        "fine_rmse_hz": float(np.sqrt(np.mean(residual**2))),
-        "fine_bias_hz": float(np.mean(residual)),
-        "fine_max_abs_hz": float(np.max(np.abs(residual))),
+        "fine_rmse_hz": float(np.sqrt(np.mean(residual**2))) if residual.size else None,
+        "fine_bias_hz": float(np.mean(residual)) if residual.size else None,
+        "fine_max_abs_hz": float(np.max(np.abs(residual))) if residual.size else None,
         "polynomial_rmse_hz": float(np.sqrt(np.mean(fitted**2))),
-        "geometry_rmse_hz": float(np.sqrt(np.mean(geom_residual**2))),
-        "fit_rms_hz": record.rms_error_hz,
+        "geometry_rmse_hz": None if geom_residual is None else float(np.sqrt(np.mean(geom_residual**2))),
+        "fit_rms_hz": float(record.rms_error_hz) if np.isfinite(record.rms_error_hz) else None,
         "valid_points": int(record.valid_mask.sum()),
         "ambiguity": record.ambiguity_number,
-        "selected_source": "geometry" if record.rms_above_threshold else "data",
-        "coherence_min": float(record.coherence.min()),
-        "coherence_max": float(record.coherence.max()),
+        "selected_source": record.selected_source,
+        "selection_reason": record.selection_reason,
+        "coherence_min": float(coherence.min()) if coherence.size else None,
+        "coherence_max": float(coherence.max()) if coherence.size else None,
         "range_times_s": tau.tolist(),
-        "fine_baseband_hz": record.fine_baseband_hz.tolist(),
-        "data_dc_polynomial": record.data_dc_polynomial.tolist(),
+        "fine_baseband_hz": real_values(record.fine_baseband_hz),
+        "data_dc_polynomial": None if record.data_dc_polynomial is None else record.data_dc_polynomial.tolist(),
     }
 
 
@@ -165,7 +171,8 @@ def main():
                                 "same_l1_time_support": same_time_support,
                                 "estimation_seconds": time.monotonic() - begin, "blocks": blocks})
         save()
-        print(name, [(round(b["fine_rmse_hz"], 4), round(b["fit_rms_hz"], 4)) for b in blocks], flush=True)
+        print(name, [(None if b["fine_rmse_hz"] is None else round(b["fine_rmse_hz"],4),
+                     None if b["fit_rms_hz"] is None else round(b["fit_rms_hz"],4)) for b in blocks],flush=True)
 
     variants = [("basic", None), ("reference", reference)]
     for name, attribute, value in [("no_bias", "bias", 0j), ("no_rx", "rx_enabled", False),

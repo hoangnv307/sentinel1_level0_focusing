@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
@@ -19,6 +20,15 @@ import sentinel1_processing.doppler_centroid as doppler_centroid
 import sentinel1_processing.pre_processing.downlink_header_validation as downlink_header_validation
 import sentinel1_processing.range_processing as range_processing
 import sentinel1_processing.s6_parameters as s6_parameters
+
+
+def s6_annotation_path():
+    path = Path(os.environ.get("SENTINEL1_S6_ANNOTATION", str(
+        Path(__file__).resolve().parents[1]/"references"/
+        "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml")))
+    if not path.is_file():
+        raise unittest.SkipTest("Integration S6 cần SENTINEL1_S6_ANNOTATION trỏ tới annotation thật.")
+    return path
 
 
 class ProcessingTest(unittest.TestCase):
@@ -396,11 +406,7 @@ class ProcessingTest(unittest.TestCase):
         np.testing.assert_array_equal(valid, [True, True, False, True, True])
 
     def test_s6_annotation_fit_reproduces_ipf_valid_points(self):
-        root = ElementTree.parse(
-            Path(__file__).parents[1]
-            / "references"
-            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
-        ).getroot()
+        root = ElementTree.parse(s6_annotation_path()).getroot()
         records = root.findall("./dopplerCentroid/dcEstimateList/dcEstimate")
 
         for record_index, (record, rejected) in enumerate(
@@ -437,11 +443,7 @@ class ProcessingTest(unittest.TestCase):
     def test_s6_range_blocks_match_annotation_layout(self):
         config = doppler_centroid.estimation.Config.for_stripmap_s6()
         sample_rate_hz = 46_918_402.8
-        root = ElementTree.parse(
-            Path(__file__).parents[1]
-            / "references"
-            / "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
-        ).getroot()
+        root = ElementTree.parse(s6_annotation_path()).getroot()
         record = root.find("./dopplerCentroid/dcEstimateList/dcEstimate")
         dce_range_start_s = float(record.findtext("t0"))
         annotation_times = np.array([
@@ -581,10 +583,7 @@ class ProcessingTest(unittest.TestCase):
             product_stop_time_s=last_time_s,
             zero_dop_minus_acq_time_s=0.0,
         )
-        annotation_root = ElementTree.parse(
-            project / "references/"
-            "s1a-s6-slc-vv-20251226t214357-20251226t214426-062491-07d496-002.xml"
-        ).getroot()
+        annotation_root = ElementTree.parse(s6_annotation_path()).getroot()
         annotation = annotation_root.findall(
             "./dopplerCentroid/dcEstimateList/dcEstimate"
         )

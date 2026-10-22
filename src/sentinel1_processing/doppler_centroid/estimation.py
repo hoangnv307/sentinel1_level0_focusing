@@ -12,6 +12,7 @@ from typing import Callable, Iterable, Literal, Optional, Sequence
 import numpy as np
 
 from .. import s6_parameters
+from .layout import context_starts, map_starts
 
 
 ArrayLike = np.ndarray | Sequence[float]
@@ -43,18 +44,27 @@ class Config:
     # range-compressed support.
     range_roi_start: int = 0
     range_roi_stop: Optional[int] = None
+    range_start_rounding: Literal["floor", "nearest"] = "floor"
 
     # How DCE azimuth blocks are placed.
     # "spacing"  : regular configurable spacing, with tail coverage.
     # "slice_timeline": [Inference] global Sentinel-1 sliced-product schedule.
     # "custom"   : use explicit starts passed to build_azimuth_blocks().
     azimuth_placement: Literal[
-        "spacing", "slice_timeline", "custom"
+        "spacing", "slice_timeline", "legacy_slice_timeline", "custom"
     ] = "spacing"
 
     # DAD §5.6: azimuth spacing between DC estimates is configurable.
     # Required for azimuth_placement="spacing".
     azimuth_spacing_lines: Optional[int] = None
+
+    # Inferred schedule; caller supplies acquisition context and endpoint convention.
+    nominal_spacing_s: Optional[float] = None
+    current_slice_index: int = 0
+    tail_stop_convention: Optional[str] = None
+    mapping_tolerance_s: Optional[float] = None
+    continuity_tolerance_s: Optional[float] = None
+    missing_support_policy: str = "error"
 
     # DAD §5.3: FFT length used by the robust fine-DC unwrapping algorithm
     # is an internal/configurable parameter.
@@ -84,6 +94,13 @@ class Config:
     # bright range samples.
     accc_range_weighting: Literal["power", "phase"] = "power"
 
+    dc_method: str = "Data Analysis"
+    fallback_policy: str = "geometry"
+    predefined_coefficients: Optional[tuple[float, ...]] = None
+    predefined_t0_s: Optional[float] = None
+    predefined_range_support_s: Optional[tuple[float, float]] = None
+    predefined_time_support_s: Optional[tuple[float, float]] = None
+
     @classmethod
     def for_stripmap_s6(cls) -> "Config":
         """Parameters used for the supplied Stripmap S6 scene.
@@ -96,7 +113,7 @@ class Config:
             num_range_blocks=s6_parameters.DCE_RANGE_BLOCKS,
             range_block_size_samples=s6_parameters.DCE_RANGE_BLOCK_SIZE_SAMPLES,
             range_roi_stop=s6_parameters.DCE_RANGE_ROI_STOP_SAMPLE,
-            azimuth_placement="slice_timeline",
+            azimuth_placement="legacy_slice_timeline",
             azimuth_spacing_lines=None,
             unwrap_fft_length=s6_parameters.DCE_UNWRAP_FFT_LENGTH,
             polynomial_degree=2,
@@ -273,6 +290,10 @@ class RangeBlock:
         return self.stop_sample - self.start_sample
 
 
+class DataQualityError(ValueError):
+    """Data-DCE không khả dụng; configuration/geometry errors không thuộc loại này."""
+
+
 @dataclass
 class Estimate:
     """DCE result for one azimuth block."""
@@ -293,7 +314,7 @@ class Estimate:
 
     # Polynomial coefficients are stored in ASCENDING order:
     # f(tau) = c0 + c1*(tau-t0) + c2*(tau-t0)^2 + ...
-    data_dc_polynomial: np.ndarray
+    data_dc_polynomial: Optional[np.ndarray]
 
     geometry_dc_polynomial: Optional[np.ndarray] = None
 
@@ -309,6 +330,12 @@ class Estimate:
     ambiguity_number: Optional[int] = None
     absolute_ambiguity_resolved: bool = False
 
+    processing_scope_id: Optional[str] = None
+    acquisition_window_id: Optional[str] = None
+    selected_source: str = "data"
+    selection_reason: str = "data_quality_accepted"
+    selected_dc_polynomial: Optional[np.ndarray] = None
+
     @property
     def range_times_s(self) -> np.ndarray:
         return np.asarray(
@@ -319,7 +346,12 @@ class Estimate:
     def evaluate(self, slant_range_time_s: ArrayLike) -> np.ndarray:
         tau = np.asarray(slant_range_time_s, dtype=np.float64)
         x = tau - self.t0_s
-        return np.polynomial.polynomial.polyval(x, self.data_dc_polynomial)
+        coefficients = self.selected_dc_polynomial
+        if coefficients is None:
+            coefficients = self.data_dc_polynomial
+        if coefficients is None:
+            raise ValueError("DCE result has no selected polynomial.")
+        return np.polynomial.polynomial.polyval(x, coefficients)
 
 
 # ---------------------------------------------------------------------------
@@ -348,10 +380,9 @@ def build_azimuth_blocks(
     to each input line. ``azimuth_time_offset_s`` can convert packet/acquisition
     time to the desired DCE time convention (e.g. zero-Doppler time).
 
-    ``azimuth_placement="slice_timeline"`` uses the global schedule inferred
-    from Sentinel-1 Stripmap sliced products: each slice start, each midpoint
-    between consecutive slice starts, and for the final slice its midpoint and
-    final complete DCE block. Records are retained by zero-Doppler product time.
+    ``slice_timeline`` uses H/K in acquisition time for the current slice,
+    retaining the next slice boundary window. ``legacy_slice_timeline`` is
+    the old S6 regression profile with product-time filtering.
     """
     if n_lines <= 0:
         raise ValueError("n_lines must be positive.")
@@ -371,12 +402,29 @@ def build_azimuth_blocks(
             raise ValueError(
                 "azimuth_times_s must be a 1-D array with one value per input line."
             )
-        if np.any(np.diff(line_times) <= 0):
+        if not np.isfinite(line_times).all() or np.any(np.diff(line_times) <= 0):
             raise ValueError("azimuth_times_s must be strictly increasing.")
 
     placement = config.azimuth_placement
 
     if placement == "slice_timeline":
+        if line_times is None or any(value is None for value in (
+                slice_start_times_s, last_slice_stop_time_s, config.nominal_spacing_s,
+                config.tail_stop_convention, config.mapping_tolerance_s, config.continuity_tolerance_s)):
+            raise ValueError("slice_timeline requires explicit acquisition context, spacing, tail and tolerances.")
+        requested = context_starts(slice_start_times_s=slice_start_times_s,
+            last_slice_stop_time_s=last_slice_stop_time_s, current_slice_index=config.current_slice_index,
+            block_size_lines=B, prf_hz=prf_hz, nominal_spacing_s=config.nominal_spacing_s,
+            tail_stop_convention=config.tail_stop_convention)
+        windows = map_starts(requested, line_times, block_size_lines=B, prf_hz=prf_hz,
+            mapping_tolerance_s=config.mapping_tolerance_s, continuity_tolerance_s=config.continuity_tolerance_s,
+            missing_support_policy=config.missing_support_policy)
+        starts = [w["start_line"] for w in windows if w["available"]]
+        if not starts:
+            raise ValueError("No supported DCE window in the supplied acquisition data.")
+        output_time_offset = 0.0
+
+    elif placement == "legacy_slice_timeline":
         if line_times is None:
             raise ValueError(
                 "azimuth_times_s is required for placement='slice_timeline'."
@@ -449,19 +497,17 @@ def build_azimuth_blocks(
         output_time_offset = float(azimuth_time_offset_s)
 
     elif placement == "custom":
-        if not custom_starts:
-            raise ValueError(
-                "custom_starts must be supplied for placement='custom'."
-            )
-        starts = [int(s) for s in custom_starts]
+        if custom_starts is None or len(custom_starts) == 0:
+            raise ValueError("custom_starts must be supplied for placement='custom'.")
+        if any(isinstance(s, bool) or not isinstance(s, (int, np.integer))
+               or not 0 <= s <= n_lines-B for s in custom_starts):
+            raise ValueError("custom_starts must be integer starts with complete input support.")
+        starts = sorted(set(custom_starts))
         output_time_offset = float(azimuth_time_offset_s)
 
     else:
         raise ValueError(f"Unsupported azimuth placement: {placement}")
 
-    if placement != "slice_timeline":
-        last_start = n_lines - B
-        starts = sorted({min(max(0, int(s)), last_start) for s in starts})
 
     blocks: list[AzimuthBlock] = []
 
@@ -571,15 +617,11 @@ def build_range_blocks(
         first_start = roi0
         last_start = roi1 - B
 
-        if n_blocks == 1:
-            starts = np.array(
-                [int(round(0.5 * (first_start + last_start)))],
-                dtype=int,
-            )
-        else:
-            starts = np.floor(
-                np.linspace(first_start, last_start, n_blocks)
-            ).astype(int)
+        positions=(np.array([.5*(first_start+last_start)]) if n_blocks==1 else
+                   np.linspace(first_start,last_start,n_blocks))
+        if config.range_start_rounding not in ("floor","nearest"):
+            raise ValueError("Range start rounding must be floor or nearest.")
+        starts=(np.floor(positions) if config.range_start_rounding=="floor" else np.rint(positions)).astype(int)
 
         stops = starts + B
 
@@ -1122,7 +1164,7 @@ def fit_polynomial(
     finite = np.isfinite(tau) & np.isfinite(y) & np.isfinite(quality)
     finite &= quality > 0.0
     if np.count_nonzero(finite) < degree + 1:
-        raise ValueError("Not enough positive-quality points for polynomial fit.")
+        raise DataQualityError("insufficient_fit_points")
 
     x = tau - float(t0_s)
     mask = finite.copy()
@@ -1265,9 +1307,41 @@ class Estimator:
         prf_hz: float,
         config: Config,
     ) -> None:
-        if prf_hz <= 0:
-            raise ValueError("prf_hz must be positive.")
-
+        if not np.isfinite(prf_hz) or prf_hz <= 0:
+            raise ValueError("prf_hz must be finite and positive.")
+        for key, minimum in (("azimuth_block_size_lines",2),("num_range_blocks",1),
+                             ("unwrap_fft_length",2),("polynomial_degree",0),("max_fit_iterations",1)):
+            value = getattr(config,key)
+            if isinstance(value,bool) or not isinstance(value,(int,np.integer)) or value<minimum:
+                raise ValueError(f"Invalid DCE config: {key}.")
+        for key, minimum in (("range_block_size_samples",1),("range_roi_start",0),("range_roi_stop",1)):
+            value=getattr(config,key)
+            if value is not None and (isinstance(value,bool) or not isinstance(value,(int,np.integer)) or value<minimum):
+                raise ValueError(f"Invalid DCE config: {key}.")
+        if config.range_start_rounding not in ("floor","nearest"):
+            raise ValueError("Invalid range start rounding policy.")
+        if config.azimuth_placement not in ("spacing","slice_timeline","legacy_slice_timeline","custom"):
+            raise ValueError("Invalid azimuth placement policy.")
+        if (not np.isfinite(config.rms_threshold_hz) or config.rms_threshold_hz<0
+                or not np.isfinite(config.outlier_sigma) or config.outlier_sigma<=0):
+            raise ValueError("Invalid DCE quality thresholds.")
+        for value in (config.unwrap_weighting,config.fit_weighting):
+            if value not in ("uniform","coherence"):raise ValueError("Invalid DCE weighting.")
+        if config.accc_range_weighting not in ("power","phase"):
+            raise ValueError("Invalid ACCC weighting.")
+        if config.dc_method not in ("Data Analysis","Geometry","Predefined"):
+            raise ValueError("Invalid DC method.")
+        if config.fallback_policy not in ("geometry","error"):
+            raise ValueError("Invalid DC fallback policy.")
+        if config.dc_method=="Predefined":
+            coefficients=np.asarray(config.predefined_coefficients,dtype=float)
+            if coefficients.ndim!=1 or not coefficients.size or not np.isfinite(coefficients).all():
+                raise ValueError("Predefined DC requires finite polynomial coefficients.")
+            if config.predefined_t0_s is None or not np.isfinite(config.predefined_t0_s):
+                raise ValueError("Predefined DC requires explicit t0.")
+            for support in (config.predefined_range_support_s,config.predefined_time_support_s):
+                if support is None or len(support)!=2 or not np.isfinite(support).all() or support[0]>support[1]:
+                    raise ValueError("Predefined DC requires explicit range/time support.")
         self.prf_hz = float(prf_hz)
         self.config = config
 
@@ -1343,124 +1417,96 @@ class Estimator:
                 f"Expected {azimuth_block.num_lines} azimuth lines, got {s.shape[0]}."
             )
 
-        fine, accc, coherence = estimate_fine_dc(
-            s,
-            range_blocks,
-            self.prf_hz,
-            range_weighting=self.config.accc_range_weighting,
-        )
+        range_times = np.asarray([rb.center_slant_range_time_s for rb in range_blocks], dtype=float)
+        t0 = float(range_times[0]) if t0_s is None else float(t0_s)
+        geometry_hz = self._geometry_for_block(azimuth_block, range_times, geometry_dc_provider)
+        if self.config.dc_method != "Data Analysis":
+            return self._result(azimuth_block,range_blocks,t0,geometry_hz,known_ambiguity_number)
+        fine, accc, coherence = estimate_fine_dc(s,range_blocks,self.prf_hz,
+            range_weighting=self.config.accc_range_weighting)
+        return self._result(azimuth_block,range_blocks,t0,geometry_hz,known_ambiguity_number,
+                            fine,accc,coherence)
 
-        range_times = np.asarray(
-            [rb.center_slant_range_time_s for rb in range_blocks],
-            dtype=np.float64,
-        )
+    def _geometry_for_block(self, block, range_times, provider):
+        if self.config.dc_method == "Predefined":
+            return None
+        if provider is None:
+            if self.config.dc_method == "Geometry":
+                raise ValueError("Geometry DC requires a geometry provider.")
+            return None
+        values = np.asarray(provider(block.azimuth_time_s,range_times),dtype=float)
+        if values.shape!=range_times.shape or not np.isfinite(values).all():
+            raise ValueError("Geometry provider must return finite Hz at every range center.")
+        return values
 
-        unwrap_weights = (
-            coherence
-            if self.config.unwrap_weighting == "coherence"
-            else None
-        )
-        fit_weights = (
-            coherence
-            if self.config.fit_weighting == "coherence"
-            else None
-        )
-
-        fine_unwrapped = unwrap_fine_dc(
-            range_times,
-            fine,
-            self.prf_hz,
-            fft_length=self.config.unwrap_fft_length,
-            weights=unwrap_weights,
-        )
-
-        if t0_s is None:
-            # A local reference close to the data minimizes polynomial
-            # conditioning problems. For exact product reproduction the
-            # annotation/product t0 may be supplied explicitly.
-            t0 = float(range_times[0])
+    def _result(self, block, range_blocks, t0, geometry_hz, known_ambiguity_number,
+                fine=None, accc=None, coherence=None):
+        cfg=self.config
+        tau=np.asarray([rb.center_slant_range_time_s for rb in range_blocks],dtype=float)
+        if not np.isfinite(t0) or not np.isfinite(tau).all() or np.any(np.diff(tau)<=0):
+            raise ValueError("DCE polynomial origin/range grid is invalid.")
+        result=Estimate(block=block,t0_s=t0,range_blocks=list(range_blocks),
+            fine_baseband_hz=np.empty(0),fine_unwrapped_hz=np.empty(0),fine_absolute_hz=np.empty(0),
+            data_dc_polynomial=None)
+        if cfg.dc_method=="Predefined":
+            lo,hi=cfg.predefined_range_support_s
+            a,b=cfg.predefined_time_support_s
+            if tau[0]<lo or tau[-1]>hi or not a<=block.azimuth_time_s<=b:
+                raise ValueError("Predefined DC query is outside declared support.")
+            result.t0_s=cfg.predefined_t0_s
+            result.selected_dc_polynomial=np.asarray(cfg.predefined_coefficients,dtype=float)
+            result.selected_source="predefined";result.selection_reason="configured_predefined"
+            return result
+        if geometry_hz is not None:
+            result.geometry_dc_polynomial,_,_=fit_polynomial(tau,geometry_hz,t0_s=t0,
+                degree=cfg.polynomial_degree,outlier_sigma=cfg.outlier_sigma,max_iterations=cfg.max_fit_iterations)
+        if cfg.dc_method=="Geometry":
+            result.selected_dc_polynomial=result.geometry_dc_polynomial
+            result.selected_source="geometry";result.selection_reason="configured_geometry"
+            return result
+        result.fine_baseband_hz=fine
+        result.accc=accc;result.coherence=coherence
+        try:
+            valid=np.isfinite(fine)&np.isfinite(accc)&np.isfinite(coherence)&(np.abs(accc)>0)&(coherence>0)
+            result.fine_baseband_hz=np.where(valid,fine,np.nan)
+            if np.count_nonzero(valid)<cfg.polynomial_degree+1:
+                raise DataQualityError("invalid_accc_or_insufficient_points")
+            weights=np.where(valid,coherence if cfg.unwrap_weighting=="coherence" else 1.,0.)
+            unwrapped=unwrap_fine_dc(tau,np.where(valid,fine,0.),self.prf_hz,
+                fft_length=cfg.unwrap_fft_length,weights=weights)
+            if not np.isfinite(unwrapped[valid]).all():
+                raise DataQualityError("unwrap_nonfinite")
+            unwrapped[~valid]=np.nan
+            result.fine_unwrapped_hz=unwrapped
+            fit_weights=np.where(valid,coherence if cfg.fit_weighting=="coherence" else 1.,0.)
+            if geometry_hz is not None:
+                (absolute,data_poly,geometry_poly,ambiguity,mask,rms)=resolve_absolute_dc(
+                    tau,unwrapped,geometry_hz,self.prf_hz,t0_s=t0,degree=cfg.polynomial_degree,
+                    outlier_sigma=cfg.outlier_sigma,max_fit_iterations=cfg.max_fit_iterations,weights=fit_weights)
+                result.geometry_dc_polynomial=geometry_poly
+                result.absolute_ambiguity_resolved=True
+            else:
+                ambiguity=None if known_ambiguity_number is None else int(known_ambiguity_number)
+                absolute=unwrapped.copy()
+                if ambiguity is not None:absolute+=ambiguity*self.prf_hz
+                data_poly,mask,rms=fit_polynomial(tau,absolute,t0_s=t0,degree=cfg.polynomial_degree,
+                    outlier_sigma=cfg.outlier_sigma,max_iterations=cfg.max_fit_iterations,weights=fit_weights)
+                result.absolute_ambiguity_resolved=ambiguity is not None
+            if not np.isfinite(data_poly).all() or not np.isfinite(rms):
+                raise DataQualityError("fit_nonfinite")
+            result.fine_absolute_hz=absolute;result.data_dc_polynomial=data_poly
+            result.ambiguity_number=ambiguity;result.valid_mask=mask;result.rms_error_hz=rms
+            result.rms_above_threshold=bool(rms>cfg.rms_threshold_hz)
+            if result.rms_above_threshold:raise DataQualityError("rms_above_threshold")
+        except (DataQualityError,np.linalg.LinAlgError) as error:
+            if cfg.fallback_policy!="geometry" or result.geometry_dc_polynomial is None:
+                raise
+            result.selected_source="geometry"
+            result.selection_reason=str(error) if isinstance(error,DataQualityError) else "fit_singular"
+            result.selected_dc_polynomial=result.geometry_dc_polynomial
         else:
-            t0 = float(t0_s)
-
-        geometry_poly: Optional[np.ndarray] = None
-        ambiguity_number: Optional[int] = None
-        ambiguity_resolved = False
-
-        if geometry_dc_provider is not None:
-            geometry = np.asarray(
-                geometry_dc_provider(
-                    azimuth_block.azimuth_time_s,
-                    range_times,
-                ),
-                dtype=np.float64,
-            )
-
-            if geometry.shape != range_times.shape:
-                raise ValueError(
-                    "geometry_dc_provider must return one DC value per range block."
-                )
-
-            (
-                absolute,
-                data_poly,
-                geometry_poly,
-                ambiguity_number,
-                valid_mask,
-                rms,
-            ) = resolve_absolute_dc(
-                range_times,
-                fine_unwrapped,
-                geometry,
-                self.prf_hz,
-                t0_s=t0,
-                degree=self.config.polynomial_degree,
-                outlier_sigma=self.config.outlier_sigma,
-                max_fit_iterations=self.config.max_fit_iterations,
-                weights=fit_weights,
-            )
-
-            ambiguity_resolved = True
-
-        else:
-            # Without geometry only the range-unwrapped data DC is known; its
-            # absolute PRF ambiguity cannot be guaranteed.
-            ambiguity_number = (
-                None
-                if known_ambiguity_number is None
-                else int(known_ambiguity_number)
-            )
-            ambiguity_resolved = ambiguity_number is not None
-            absolute = fine_unwrapped.copy()
-            if ambiguity_number is not None:
-                absolute += ambiguity_number * self.prf_hz
-
-            data_poly, valid_mask, rms = fit_polynomial(
-                range_times,
-                absolute,
-                t0_s=t0,
-                degree=self.config.polynomial_degree,
-                outlier_sigma=self.config.outlier_sigma,
-                max_iterations=self.config.max_fit_iterations,
-                weights=fit_weights,
-            )
-
-        return Estimate(
-            block=azimuth_block,
-            t0_s=t0,
-            range_blocks=list(range_blocks),
-            fine_baseband_hz=fine,
-            fine_unwrapped_hz=fine_unwrapped,
-            fine_absolute_hz=absolute,
-            data_dc_polynomial=data_poly,
-            geometry_dc_polynomial=geometry_poly,
-            accc=accc,
-            coherence=coherence,
-            valid_mask=valid_mask,
-            rms_error_hz=rms,
-            rms_above_threshold=bool(rms > self.config.rms_threshold_hz),
-            ambiguity_number=ambiguity_number,
-            absolute_ambiguity_resolved=ambiguity_resolved,
-        )
+            result.selected_dc_polynomial=result.data_dc_polynomial
+        return result
 
     def estimate_scene(
         self,
@@ -1647,110 +1693,15 @@ class Estimator:
         records: list[Estimate] = []
 
         for block in az_blocks:
-            c_range, p0_range, p1_range, _ = _stream_accc_from_segments(
-                prepared,
-                block,
-                batch_lines=batch_lines,
-            )
-            fine, accc, coherence = _fine_dce_from_accumulators(
-                c_range,
-                p0_range,
-                p1_range,
-                rg_blocks,
-                self.prf_hz,
-                range_weighting=self.config.accc_range_weighting,
-            )
-
-            unwrap_weights = (
-                coherence
-                if self.config.unwrap_weighting == "coherence"
-                else None
-            )
-            fit_weights = (
-                coherence
-                if self.config.fit_weighting == "coherence"
-                else None
-            )
-            fine_unwrapped = unwrap_fine_dc(
-                range_times,
-                fine,
-                self.prf_hz,
-                fft_length=self.config.unwrap_fft_length,
-                weights=unwrap_weights,
-            )
-
-            geometry_poly: Optional[np.ndarray] = None
-            ambiguity_number: Optional[int] = None
-            ambiguity_resolved = False
-
-            if geometry_dc_provider is not None:
-                geometry = np.asarray(
-                    geometry_dc_provider(block.azimuth_time_s, range_times),
-                    dtype=np.float64,
-                )
-                if geometry.shape != range_times.shape:
-                    raise ValueError(
-                        "geometry_dc_provider must return one DC value per range block."
-                    )
-
-                (
-                    absolute,
-                    data_poly,
-                    geometry_poly,
-                    ambiguity_number,
-                    valid_mask,
-                    rms,
-                ) = resolve_absolute_dc(
-                    range_times,
-                    fine_unwrapped,
-                    geometry,
-                    self.prf_hz,
-                    t0_s=fit_t0,
-                    degree=self.config.polynomial_degree,
-                    outlier_sigma=self.config.outlier_sigma,
-                    max_fit_iterations=self.config.max_fit_iterations,
-                    weights=fit_weights,
-                )
-                ambiguity_resolved = True
-            else:
-                ambiguity_number = (
-                    None
-                    if known_ambiguity_number is None
-                    else int(known_ambiguity_number)
-                )
-                ambiguity_resolved = ambiguity_number is not None
-                absolute = fine_unwrapped.copy()
-                if ambiguity_number is not None:
-                    absolute += ambiguity_number * self.prf_hz
-                data_poly, valid_mask, rms = fit_polynomial(
-                    range_times,
-                    absolute,
-                    t0_s=fit_t0,
-                    degree=self.config.polynomial_degree,
-                    outlier_sigma=self.config.outlier_sigma,
-                    max_iterations=self.config.max_fit_iterations,
-                    weights=fit_weights,
-                )
-
-            records.append(
-                Estimate(
-                    block=block,
-                    t0_s=fit_t0,
-                    range_blocks=list(rg_blocks),
-                    fine_baseband_hz=fine,
-                    fine_unwrapped_hz=fine_unwrapped,
-                    fine_absolute_hz=absolute,
-                    data_dc_polynomial=data_poly,
-                    geometry_dc_polynomial=geometry_poly,
-                    accc=accc,
-                    coherence=coherence,
-                    valid_mask=valid_mask,
-                    rms_error_hz=rms,
-                    rms_above_threshold=bool(rms > self.config.rms_threshold_hz),
-                    ambiguity_number=ambiguity_number,
-                    absolute_ambiguity_resolved=ambiguity_resolved,
-                )
-            )
+            geometry_hz=self._geometry_for_block(block,range_times,geometry_dc_provider)
+            if self.config.dc_method!="Data Analysis":
+                records.append(self._result(block,rg_blocks,fit_t0,geometry_hz,known_ambiguity_number))
+                continue
+            c_range,p0_range,p1_range,_=_stream_accc_from_segments(prepared,block,batch_lines=batch_lines)
+            fine,accc,coherence=_fine_dce_from_accumulators(c_range,p0_range,p1_range,rg_blocks,
+                self.prf_hz,range_weighting=self.config.accc_range_weighting)
+            records.append(self._result(block,rg_blocks,fit_t0,geometry_hz,known_ambiguity_number,
+                                        fine,accc,coherence))
 
         if return_prepared_scene:
             return records, prepared
@@ -1949,13 +1900,16 @@ def compare_with_annotations(
             "annotation_hz": reference_hz,
             "estimated_hz": estimated_hz,
             "geometry_hz": geometry_hz,
-            "fit_range_times_s": estimated.range_times_s.copy(),
+            "fit_range_times_s": (estimated.range_times_s.copy() if estimated.fine_absolute_hz.size else np.empty(0)),
             "fit_points_hz": estimated.fine_absolute_hz.copy(),
-            "fit_valid_mask": estimated.valid_mask.copy(),
+            "fit_valid_mask": (estimated.valid_mask.copy() if estimated.valid_mask.size==estimated.fine_absolute_hz.size
+                               else np.zeros(estimated.fine_absolute_hz.size,dtype=bool)),
             "annotation_coefficients": np.asarray(
                 annotation["dataDcPolynomial"], dtype=np.float64
             ),
-            "estimated_coefficients": estimated.data_dc_polynomial.copy(),
+            "estimated_coefficients": (estimated.selected_dc_polynomial.copy() if estimated.selected_dc_polynomial is not None
+                                       else None if estimated.data_dc_polynomial is None else estimated.data_dc_polynomial.copy()),
+            "selected_source": estimated.selected_source,"selection_reason":estimated.selection_reason,
             "azimuth_time_error_ms": 1e3 * (
                 estimated.block.azimuth_time_s - annotation["azimuth_s"]
             ),
@@ -1967,8 +1921,8 @@ def compare_with_annotations(
             "ambiguity_adjusted_rmse_hz": float(
                 np.sqrt(np.mean(adjusted_error_hz**2))
             ),
-            "fit_rms_hz": estimated.rms_error_hz,
-            "mean_coherence": float(np.mean(estimated.coherence)),
+            "fit_rms_hz": float(estimated.rms_error_hz) if np.isfinite(estimated.rms_error_hz) else None,
+            "mean_coherence": (float(np.mean(estimated.coherence)) if estimated.coherence.size and np.isfinite(estimated.coherence).all() else None),
             "absolute_ambiguity_resolved": estimated.absolute_ambiguity_resolved,
         })
 
@@ -1993,7 +1947,9 @@ def summarize_estimates(records: Sequence[Estimate]) -> list[dict]:
                 "rms_above_threshold": r.rms_above_threshold,
                 "ambiguity_number": r.ambiguity_number,
                 "absolute_ambiguity_resolved": r.absolute_ambiguity_resolved,
-                "data_dc_polynomial": r.data_dc_polynomial.copy(),
+                "data_dc_polynomial": None if r.data_dc_polynomial is None else r.data_dc_polynomial.copy(),
+                "selected_source": r.selected_source, "selection_reason": r.selection_reason,
+                "selected_dc_polynomial": None if r.selected_dc_polynomial is None else r.selected_dc_polynomial.copy(),
             }
         )
 
@@ -2008,7 +1964,7 @@ def _self_test() -> None:
     schedule_config = Config(
         azimuth_block_size_lines=100,
         num_range_blocks=1,
-        azimuth_placement="slice_timeline",
+        azimuth_placement="legacy_slice_timeline",
     )
     schedule_kwargs = {
         "slice_start_times_s": [0.0, 1.0, 2.0],

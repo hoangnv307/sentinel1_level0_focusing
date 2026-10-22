@@ -18,6 +18,9 @@ class EphemerisTest(unittest.TestCase):
             "Z-axis velocity ECEF": [0, 0, 0, 0],
         })
 
+        conflict=ephemeris.copy();conflict.loc[2,"X-axis position ECEF"]=100
+        with self.assertRaisesRegex(ValueError,"Conflicting"):
+            common.effective_velocity.Estimator.from_ephemeris(conflict,.05)
         estimator = common.effective_velocity.Estimator.from_ephemeris(
             ephemeris, 0.05
         )
