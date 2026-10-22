@@ -18,9 +18,11 @@ python workflows/sentinel-1/copernicus_metadata.py search \
 ```
 
 Seed là **tên sản phẩm SAFE**, không phải tên annotation XML. Search giới hạn
-cùng mission, swath, absolute orbit và datatake, trong ±2 giờ quanh start của
+cùng mission, swath và datatake, trong ±2 giờ quanh start của
 seed. Có thể chỉ định lại `--start`/`--stop`; không mặc định rằng kết quả
-đã bao trùm toàn datatake. `verify` báo các slice còn thiếu so với context.
+đã bao trùm toàn datatake. Datatake có thể qua ranh absolute orbit; bộ lọc
+không khóa orbit và kiểm lại datatake từ tên sản phẩm. `verify` báo các slice
+còn thiếu so với context.
 
 Để tìm nhiều datatake theo khoảng ngày:
 
@@ -84,10 +86,25 @@ không). Không cần gửi mật khẩu vào hội thoại hoặc đặt trên 
 vào môi trường của process từ nơi lưu credential local ngoài Git. Có thể
 thay bằng `CDSE_ACCESS_TOKEN` có sẵn; token này được ưu tiên. Với token bên
 ngoài đã hết hạn, cần nạp lại token; tool không có refresh token của phiên đó.
-Tool không tự đọc `.env`, không lưu credential hoặc token xuống đĩa.
+Tool không tự đọc `.env`. `download --login` không tạo file phiên mới.
+
+Để cho phép các lần tải tự động sau đó dùng lại phiên mà không lưu mật khẩu:
+
+```bash
+python workflows/sentinel-1/copernicus_metadata.py login
+```
+
+Lệnh này hỏi password ẩn và lưu **access/refresh token cùng expiry** vào
+`~/.config/sentinel1/cdse_session.json`, quyền 600. Không lưu username/password.
+Các lần download sau tự đọc file này và ghi lại refresh token mới khi xoay
+phiên. Có thể chỉ định `login --session-file`, nhưng file phải ở ngoài repo;
+download tự đọc đường dẫn mặc định. File khác có thể được dùng qua
+`Client(session_file=...)`. Không chia sẻ file phiên hoặc đưa nó vào Git.
+Xóa file khi muốn bỏ phiên local; phiên bị CDSE thu hồi/hết hạn thì chạy
+`login` lại. Search và dry-run không đọc hoặc sử dụng file phiên.
 
 Khi đăng nhập bằng username/password, dùng `client_id=cdse-public`; token
-được giữ trong RAM và refresh gần lúc hết hạn hoặc sau một HTTP 401. Chỉ
+được giữ trong RAM (và file riêng nếu chọn `login`) và refresh gần lúc hết hạn hoặc sau một HTTP 401. Chỉ
 thử refresh một lần cho request 401. Không retry POST đăng nhập tự động.
 
 GET có timeout 30 giây và retry tối đa 3 lần cho lỗi kết nối/429/5xx được
@@ -120,7 +137,8 @@ Mỗi annotation có kết quả **cả `last_line` và `after_last_line`**, bao
 control model cũ, residual và lỗi nếu cấu trúc không hỗ trợ. Mẫu lỗi được
 giữ trong báo cáo, không bỏ qua để cải thiện tỷ lệ khớp. Manifest nếu có
 được đọc để ghi software/IPF và các resource AUX tham chiếu. Báo cáo phân
-nhóm theo mission/orbit/datatake/swath/polarisation, ghi slice thiếu và nhận
+nhóm theo mission/datatake/swath/polarisation/context origin, lưu danh sách
+orbit, ghi slice thiếu và nhận
 diện cửa sổ acquisition chung giữa hai sản phẩm. Số record quan sát vẫn
 bao gồm các record chung: không coi đó là các mẫu độc lập.
 
@@ -149,7 +167,33 @@ thuật toán IPF hoặc độ chính xác Doppler. Xem [báo cáo layout](senti
   vì hai slice chưa cuối không phụ thuộc tail convention. Slice cuối sai
   2,276 µs với `last_line`, 600,868 µs với `after_last_line`.
 - Báo cáo tại `output/sentinel-1/copernicus/downloaded_verification.json`.
-  Refresh token vẫn mới được kiểm bằng mock, chưa kiểm trong phiên thật.
+  File phiên dùng lại đã được thêm để chạy khảo sát nhiều sản phẩm; test
+  kiểm quyền 600, xoay refresh token và không ghi password xuống đĩa.
+- Khảo sát mở rộng đã tải đủ 729 sản phẩm 2024+ không lỗi; đã refresh token
+  thật và tải lại manifest, SHA-256 trùng cache. Xem [báo cáo 787 annotation](sentinel1_dce_datatake_patterns.md).
+
+## Khảo sát mẫu lớn
+
+`survey_dce_patterns.py` đọc các XML đã tải để tách thống kê DCE và kích
+thước product/slice/datatake. Mặc định chỉ phân tích **từ 2020 trở đi**;
+phần khảo sát ưu tiên toàn bộ sản phẩm trong các cửa sổ catalogue 2024+ đã
+chọn. File trước năm giới hạn được liệt kê là excluded, không đưa vào kết luận.
+
+```bash
+python workflows/sentinel-1/survey_dce_patterns.py \
+  ~/sar_data/focusing_data/copernicus_metadata \
+  --min-year 2020 \
+  --catalogue-directory output/sentinel-1/copernicus/survey \
+  --output output/sentinel-1/copernicus/survey/patterns.json \
+  --figure output/sentinel-1/copernicus/survey/patterns.png
+```
+
+Giữ cấu hình block size/spacing/tolerance tường minh như checker. Báo cáo
+ghi SHA-256, nguồn catalogue, cohort, kết quả từng giả thuyết, phân nhóm
+IPF, khoảng thiếu slice và các cửa sổ chung. Thống kê catalogue theo tên
+product có độ phân giải một giây và chỉ là envelope quan sát được; extent
+trong sliceList cũng chưa thay thế được thời gian thu L0 đầy đủ hoặc kế
+hoạch acquisition. Biểu đồ là artifact PNG độc lập để đối chiếu.
 
 ## Nguồn tham khảo
 

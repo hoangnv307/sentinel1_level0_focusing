@@ -57,8 +57,11 @@ SEN-TN-52-7445 / MPC-0307, Issue/Revision **2/5**, ngày **17/11/2022**.
 - [Raw data analysis từ L0](docs/sentinel1_raw_data_analysis.md): API cấu hình
   theo DAD §4.1, significance, 17 test cụ thể và kết quả chạy dữ liệu thật.
 - [Tải annotation qua Copernicus](docs/sentinel1_copernicus_metadata.md): CLI
-  `copernicus_metadata.py search/download/verify`, có dry-run không cần tài
+  `copernicus_metadata.py login/search/download/verify`, có dry-run không cần tài
   khoản; lấy riêng XML/manifest, lưu SHA-256 và kiểm cả hai quy ước tail DCE.
+- [Khảo sát DCE và thời lượng product/datatake](docs/sentinel1_dce_datatake_patterns.md):
+  787 annotation từ 2020, 2.243 estimate; lịch theo slice context với khoảng
+  danh nghĩa 10 s, hai quy ước tail và khác biệt thời lượng giữa các vệ tinh.
 
 ## Cài đặt
 
@@ -123,7 +126,7 @@ L1 chỉ dùng để vẽ/đo sai lệch sau ước lượng, không thay thế 
 | Tham số | Cấu hình demo / căn cứ |
 |---|---|
 | Azimuth block | 6.000 dòng; từ duration Fine DCE L1 và PRI L0. |
-| Vị trí block | Dòng L0 `0` và `10.500` (0-based), mỗi block 6.000 dòng; không phải bước đều 3.000. Xem [kiểm chứng spacing trên 9 annotation](docs/sentinel1_dce_azimuth_layout.md): lịch cần slice context, khoảng danh nghĩa 10 s vẫn là giả thuyết và quy ước tail chưa thống nhất giữa hai bộ mẫu. |
+| Vị trí block | Dòng L0 `0` và `10.500` (0-based), mỗi block 6.000 dòng; không phải bước đều 3.000. Xem [khảo sát 787 annotation](docs/sentinel1_dce_datatake_patterns.md): lịch cần slice context, khoảng danh nghĩa 10 s được củng cố; quy ước tail còn khác nhau một PRI. |
 | Quy đổi thời gian để suy lịch | `zeroDopMinusAcqTime=0,335899 s` từ L1; geometry provider vẫn nhận acquisition time L0. |
 | Range block | 20 block × 1.000 mẫu, phân bố đều với start index lấy floor; overlap khoảng 96–97 mẫu. |
 | Range ROI / polynomial origin | Vùng giao support range-compressed hai chunk: 18.170 mẫu, origin `0,005546845595867 s` suy từ L0/AUX; khớp t0 và các tâm Fine DC L1. |

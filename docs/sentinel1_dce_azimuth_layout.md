@@ -1,5 +1,10 @@
 # Kiểm chứng khoảng cách azimuth block DCE từ annotation Stripmap
 
+Khảo sát này ghi lại 9 XML ban đầu. Kết quả mở rộng tại
+[báo cáo 787 annotation từ 2020](sentinel1_dce_datatake_patterns.md) củng cố
+khoảng danh nghĩa 10 s, kiểm start/stop/center và cho thấy không thể chọn
+quy ước tail chỉ theo vệ tinh hoặc phiên bản IPF.
+
 ## Kết luận và phạm vi
 
 **Không dùng bước 3.000 dòng làm preset mặc định.** Đây là giả định overlap

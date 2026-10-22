@@ -97,31 +97,42 @@ cho Sentinel-1.
   Luôn ghi mục/phương trình DAD và XML path của tham số khi triển khai.
   Các tham chiếu cũ đến `references/s1a-aux-*.xml` trong code không phản ánh
   nội dung thư mục hiện tại; AUX thực tế nằm trong bộ dữ liệu bên ngoài repo.
-- Đọc [kiểm chứng spacing DCE từ 9 annotation](docs/sentinel1_dce_azimuth_layout.md)
-  trước khi sửa layout: **không dùng preset 3.000 dòng**. Giả thuyết chia sensing
-  span khớp 6 cảnh một slice; bộ 3 sản phẩm cùng datatake bổ sung ngày 22/10
-  cho thấy phải dùng khoảng **start slice kế tiếp − start hiện tại**, giữ
-  estimate chung ở ranh giới. `K=max(1,floor(span/10 s))` vẫn là suy luận.
-  Sáu cảnh S1A khớp tail `after_last_line`, datatake S1C mới khớp `last_line`;
-  chưa rõ nguyên nhân, không tự chọn theo vệ tinh. 10 s chưa là cấu hình IPF xác nhận.
-  Script `check_dce_azimuth_layout.py` lưu fingerprint/residual; chưa đổi core.
-  XML bổ sung nằm ở `~/sar_data/focusing_data/l1_sm_annotation_metadata/` và
-  `~/sar_data/focusing_data/l1_sm_datatake_annotation/`, là
-  metadata tham chiếu, không phải L0 mới hay input pipeline. Nhánh core
-  `slice_timeline` lọc center theo product chưa tái tạo được bộ ba mới.
+- Đọc [khảo sát 787 annotation từ 2020](docs/sentinel1_dce_datatake_patterns.md)
+  trước khi sửa layout; [khảo sát 9 XML ban đầu](docs/sentinel1_dce_azimuth_layout.md)
+  giữ lại lịch sử kiểm chứng. **Không dùng preset 3.000 dòng**. Cả 2.243 record
+  hỗ trợ 6.000 dòng / 20 điểm range. Lịch `K=max(1,floor(H/10 s))`, start
+  đều theo H/K khớp cả 787 trong 3,300 µs khi xét hai tail: H là start slice
+  kế tiếp trừ start hiện tại, hoặc sensing span nếu slice cuối. Giữ estimate
+  chung ở ranh giới (193 cặp). Khoảng danh nghĩa 10 s vẫn là suy luận IPF.
+  Tail có thể `last_line` hoặc `after_last_line`, không chọn chỉ theo vệ tinh,
+  IPF, PRI hay sensing span; giữ convention tường minh và dùng support L0.
+  Datatake có thể qua absolute orbit: nhóm theo mission/datatake/swath/pol
+  và context origin, lưu orbit như thuộc tính. Có 593 nhóm, 587 đủ slice;
+  6 nhóm đã tìm lại bằng seed nhưng catalogue không trả thêm sản phẩm.
+  XML tải nằm ở `~/sar_data/focusing_data/copernicus_metadata/`; metadata
+  bổ sung thủ công tại `l1_sm_annotation_metadata/`, `l1_sm_datatake_annotation/`.
+  Đây là tham chiếu chẩn đoán, không phải input pipeline. Nhánh core
+  `slice_timeline` lọc center theo product chưa tái tạo được lịch context mới.
+  `survey_dce_patterns.py` lưu cohort, hash, residual, chất lượng và thời lượng;
+  chưa đổi core. Product giữa gần 25 s; sensing span đơn cảnh có xu hướng
+  bội 5 s ở A/B và 3 s ở C/D, chưa xác định nguyên nhân, không hardcode.
 - [CLI Copernicus metadata](docs/sentinel1_copernicus_metadata.md) dùng OData:
-  `workflows/sentinel-1/copernicus_metadata.py search/download/verify`, client
+  `workflows/sentinel-1/copernicus_metadata.py login/search/download/verify`, client
   tại `utils/copernicus.py`. Search và download `--dry-run` không cần login;
   tải thật đọc credential môi trường hoặc `--login` với getpass, không lưu
-  token/mật khẩu vào report/Git. Chỉ tải annotation chính + manifest, cache
+  token/mật khẩu vào report/Git. `login` cho phép lưu phiên access/refresh
+  token ngoài repo tại `~/.config/sentinel1/cdse_session.json`, quyền 600,
+  không lưu mật khẩu; các download sau dùng lại và cập nhật phiên. Public
+  search/dry-run không đọc file phiên. Chỉ tải annotation chính + manifest, cache
   theo UUID/URL/byte/SHA-256. Verify dùng checker hiện có cho cả hai tail
   convention, không tự fit; giữ lỗi, nhóm datatake và các cửa sổ chung.
   Bộ ba metadata hiện nằm ở `~/sar_data/focusing_data/l1_sm_datatake_annotation/`
   (đã đổi tên thư mục so với khảo sát ban đầu). Đã kiểm live catalogue/dry-run
   và kết quả tải có xác thực: 3 sản phẩm, 6 file, SHA-256/XML hợp lệ; annotation
   trùng bản thủ công. Manifest xác nhận IPF 003.91; đủ 3 slice/8 estimate,
-  `last_line` khớp cả 3, có 2 cặp cửa sổ acquisition chung. Refresh token
-  mới kiểm bằng mock. Đây là công cụ chẩn đoán,
+  `last_line` khớp cả 3, có 2 cặp cửa sổ acquisition chung. Khảo sát mở rộng
+  đã tải đủ 729 sản phẩm 2024+ không lỗi; refresh token thật và authenticated
+  GET manifest đã kiểm thành công, SHA-256 trùng cache. Đây là công cụ chẩn đoán,
   không đưa L1 vào pipeline L0/AUX.
 
 ## Dữ liệu Sentinel-1 cục bộ
